@@ -48,8 +48,10 @@ COPY . .
 # ── Diretório temporário para downloads ──────────────────────────────────────
 RUN mkdir -p /tmp/fintax_downloads
 
-# ── Porta exposta (Railway sobrescreve com $PORT) ─────────────────────────────
+# ── Porta exposta (Railway injeta $PORT em runtime) ───────────────────────────
 EXPOSE 8000
 
 # ── Comando de start ──────────────────────────────────────────────────────────
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Shell form garante expansão de $PORT pelo sh.
+# Fallback ${PORT:-8000} permite rodar localmente sem a variável definida.
+CMD sh -c "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"

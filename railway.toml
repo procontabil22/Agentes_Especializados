@@ -6,7 +6,9 @@ builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+# startCommand removido intencionalmente:
+# o CMD do Dockerfile já cuida do start com expansão correta de $PORT.
+# Manter startCommand aqui E CMD no Dockerfile causava conflito no Railway.
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
 healthcheckPath = "/health"
