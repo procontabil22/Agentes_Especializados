@@ -1,9 +1,17 @@
 """
-app/crawler.py — Crawler web para portais governamentais.
-4 camadas de proteção contra re-download.
-Cliente Supabase inicializado lazy.
+crawler.py — Crawler web para portais governamentais.
+Usado para fontes que exigem navegação dinâmica (JSF, SPAs) ou
+que listam PDFs em índices HTML (CPC, CFC, DREI, eSocial, etc.).
+
+4 camadas de proteção contra re-download:
+  C1 — URL hash no crawl_log
+  C2 — nome do arquivo no Google Drive
+  C3 — hash do conteúdo (dedup de arquivos idênticos)
+  C4 — Playwright para portais com JavaScript
 """
-import asyncio, hashlib, re
+import asyncio
+import hashlib
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -13,8 +21,8 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from loguru import logger
 
-from app.gdrive import _get_service, _get_or_create_folder, _pdf_exists_in_folder, _upload_bytes_to_drive
-from config.settings import settings
+from gdrive import _get_service, _get_or_create_folder, _pdf_exists_in_folder, _upload_bytes_to_drive  # flat import
+from settings import settings  # flat import
 
 
 @lru_cache(maxsize=1)
@@ -36,45 +44,201 @@ class CrawlSource:
     headers: dict = field(default_factory=dict)
 
 
+# =============================================================================
+# FONTES DE CRAWLER POR AGENTE
+# Use para portais que exigem navegação (JSF, SPA) ou índices com links de PDF.
+# Fontes simples de download direto → use downloader.py
+# =============================================================================
 CRAWL_SOURCES: list[CrawlSource] = [
+
+    # =========================================================================
+    # 1. ANALISTA FISCAL — SEFAZ-MA (portal JSF — exige Playwright)
+    # =========================================================================
+
     CrawlSource(
         url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=95",
-        folder_name="Analista_Fiscal",
-        description="SEFAZ-MA — Legislação ICMS (RICMS-MA)",
+        folder_name="fiscal",
+        description="SEFAZ-MA — RICMS-MA (Decreto 19.714/2003 + atualizações)",
         use_browser=True,
         direct_pdf_pattern=r"/portalsefaz/pdf\?codigo=\d+",
         max_depth=2,
     ),
     CrawlSource(
         url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=98",
-        folder_name="Analista_Fiscal",
+        folder_name="fiscal",
         description="SEFAZ-MA — Anexos do RICMS-MA",
         use_browser=True,
         direct_pdf_pattern=r"/portalsefaz/pdf\?codigo=\d+",
         max_depth=2,
     ),
     CrawlSource(
+        url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=97",
+        folder_name="fiscal",
+        description="SEFAZ-MA — Legislação tributária estadual MA",
+        use_browser=True,
+        direct_pdf_pattern=r"/portalsefaz/pdf\?codigo=\d+",
+        max_depth=2,
+    ),
+    CrawlSource(
+        url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=100",
+        folder_name="fiscal",
+        description="SEFAZ-MA — Instruções Normativas e Portarias GABIN",
+        use_browser=True,
+        direct_pdf_pattern=r"/portalsefaz/pdf\?codigo=\d+",
+        max_depth=2,
+    ),
+
+    # =========================================================================
+    # 2. ANALISTA CONTÁBIL — CPC e CFC (índices HTML com links para PDF)
+    # =========================================================================
+
+    CrawlSource(
         url="https://www.cpc.org.br/CPC/Documentos-Emitidos/Pronunciamentos",
-        folder_name="Analista_Contabil",
-        description="CPC — Pronunciamentos Contábeis",
-        use_browser=False, pdf_pattern=r"\.pdf", max_depth=1,
+        folder_name="contabil",
+        description="CPC — Pronunciamentos Contábeis (CPC 00 ao CPC 48)",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=1,
+        same_domain_only=False,
     ),
     CrawlSource(
-        url="https://www.planalto.gov.br/ccivil_03/decreto-lei/del5452.htm",
-        folder_name="Analista_Departamento_Pessoal",
-        description="CLT compilada",
-        use_browser=False, max_depth=0,
+        url="https://www.cpc.org.br/CPC/Documentos-Emitidos/Interpretacoes",
+        folder_name="contabil",
+        description="CPC — Interpretações Técnicas (ICPC)",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=1,
+        same_domain_only=False,
     ),
     CrawlSource(
-        url="https://www.planalto.gov.br/ccivil_03/leis/2002/l10406compilada.htm",
-        folder_name="Analista_Societario",
-        description="Código Civil 2002 compilado",
-        use_browser=False, max_depth=0,
+        url="https://www.cpc.org.br/CPC/Documentos-Emitidos/Orientacoes",
+        folder_name="contabil",
+        description="CPC — Orientações Técnicas (OCPC)",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=1,
+        same_domain_only=False,
+    ),
+    CrawlSource(
+        url="https://cfc.org.br/tecnica/normas-brasileiras-de-contabilidade/nbc-tg-geral/",
+        folder_name="contabil",
+        description="CFC — NBC TG Gerais (normas técnicas de contabilidade)",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=1,
+        same_domain_only=False,
+    ),
+    CrawlSource(
+        url="https://cfc.org.br/tecnica/normas-brasileiras-de-contabilidade/nbc-ta-auditoria-independente/",
+        folder_name="contabil",
+        description="CFC — NBC TA (Auditoria Independente)",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=1,
+        same_domain_only=False,
+    ),
+
+    # =========================================================================
+    # 3. ANALISTA DEPARTAMENTO PESSOAL — eSocial e MTE
+    # =========================================================================
+
+    CrawlSource(
+        url="https://www.gov.br/esocial/pt-br/documentacao-tecnica/manuais",
+        folder_name="pessoal",
+        description="eSocial — Manuais técnicos e layouts de eventos (S-xxxx)",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=1,
+        same_domain_only=True,
+    ),
+    CrawlSource(
+        url="https://www.gov.br/trabalho-e-emprego/pt-br/acesso-a-informacao/participacao-social/conselhos-e-orgaos-colegiados/ctpp-nrs/portarias-aprovadas-pelo-menos-de-2019",
+        folder_name="pessoal",
+        description="MTE — Normas Regulamentadoras (NR-01 a NR-38)",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=1,
+        same_domain_only=True,
+    ),
+    CrawlSource(
+        url="https://www.gov.br/previdencia/pt-br/assuntos/previdencia-social/contato/legislacao",
+        folder_name="pessoal",
+        description="Previdência Social — Legislação previdenciária (decretos e INs)",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=1,
+        same_domain_only=True,
+    ),
+
+    # =========================================================================
+    # 4. ANALISTA SOCIETÁRIO — DREI
+    # =========================================================================
+
+    CrawlSource(
+        url="https://drei.gov.br/pt-br/legislacao/instrucoes-normativas",
+        folder_name="societario",
+        description="DREI — Instruções Normativas (atos registráveis, tipos societários)",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=1,
+        same_domain_only=True,
+    ),
+    CrawlSource(
+        url="https://drei.gov.br/pt-br/legislacao/manuais-e-modelos",
+        folder_name="societario",
+        description="DREI — Manuais e modelos de atos societários",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=1,
+        same_domain_only=True,
+    ),
+
+    # =========================================================================
+    # 5. ANALISTA ABERTURA DE EMPRESAS — MA
+    # =========================================================================
+
+    CrawlSource(
+        url="https://www.jucema.ma.gov.br/legislacao",
+        folder_name="abertura_ma",
+        description="JUCEMA — Legislação registral do Maranhão",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=1,
+        same_domain_only=True,
+    ),
+    CrawlSource(
+        url="https://www.jucema.ma.gov.br/servicos/tabela-de-precos",
+        folder_name="abertura_ma",
+        description="JUCEMA — Tabela de preços e documentos exigidos",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=1,
+        same_domain_only=True,
+    ),
+    CrawlSource(
+        url="https://www.cbm.ma.gov.br/instrucoes-tecnicas/",
+        folder_name="abertura_ma",
+        description="CBMMA — Instruções Técnicas (IT-01 a IT-34) — CLCB e AVCB",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=1,
+        same_domain_only=True,
+    ),
+    CrawlSource(
+        url="https://drei.gov.br/pt-br/legislacao/instrucoes-normativas",
+        folder_name="abertura_ma",
+        description="DREI — INs para registro na JUCEMA",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=1,
+        same_domain_only=True,
     ),
 ]
 
 
-# ── Deduplicação ──────────────────────────────────────────────────────────────
+# =============================================================================
+# Deduplicação
+# =============================================================================
 
 def _hash_url(url: str) -> str:
     return hashlib.sha256(url.encode()).hexdigest()
@@ -112,14 +276,16 @@ def _log_crawl(url, filename, folder, status, source_page="",
         "last_checked_at": now,
     }
     if drive_file_id: record["drive_file_id"] = drive_file_id
-    if size_kb:       record["file_size_kb"] = size_kb
-    if content_hash:  record["content_hash"] = content_hash
-    if error_msg:     record["error_msg"] = error_msg
+    if size_kb:       record["file_size_kb"]  = size_kb
+    if content_hash:  record["content_hash"]  = content_hash
+    if error_msg:     record["error_msg"]     = error_msg
     if status == "downloaded": record["downloaded_at"] = now
     _supabase().table("crawl_log").upsert(record, on_conflict="url_hash").execute()
 
 
-# ── URL → filename ────────────────────────────────────────────────────────────
+# =============================================================================
+# URL → filename
+# =============================================================================
 
 def _url_to_filename(url: str, title: str = "") -> str:
     m = re.search(r"codigo=(\d+)", url)
@@ -134,7 +300,9 @@ def _url_to_filename(url: str, title: str = "") -> str:
     return re.sub(r"[^\w\-\.]", "_", name)
 
 
-# ── Busca de página ───────────────────────────────────────────────────────────
+# =============================================================================
+# Fetch de página
+# =============================================================================
 
 async def _fetch_httpx(url: str, headers: dict = None) -> str:
     async with httpx.AsyncClient(
@@ -164,7 +332,9 @@ async def _fetch_playwright(url: str) -> str:
         return html
 
 
-# ── Extração de PDFs ──────────────────────────────────────────────────────────
+# =============================================================================
+# Extração de links
+# =============================================================================
 
 def _extract_pdf_links(html: str, base_url: str, source: CrawlSource) -> list[dict]:
     found, seen = [], set()
@@ -203,12 +373,16 @@ def _extract_sub_links(html: str, base_url: str) -> list[str]:
     return links[:20]
 
 
-# ── Download ──────────────────────────────────────────────────────────────────
+# =============================================================================
+# Download de PDF
+# =============================================================================
 
 async def _download_pdf(url: str) -> Optional[bytes]:
     try:
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; FinTaxBot/1.0)"}) as c:
+        async with httpx.AsyncClient(
+            timeout=60, follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; FinTaxBot/1.0)"}
+        ) as c:
             r = await c.get(url)
             r.raise_for_status()
             if not (r.content[:4] == b"%PDF" or "pdf" in r.headers.get("content-type", "")):
@@ -220,7 +394,9 @@ async def _download_pdf(url: str) -> Optional[bytes]:
         return None
 
 
-# ── Crawl principal ───────────────────────────────────────────────────────────
+# =============================================================================
+# Crawl principal
+# =============================================================================
 
 async def crawl_and_upload(source: CrawlSource) -> list[dict]:
     logger.info(f"\n🌐 {source.description or source.url}")
@@ -230,30 +406,33 @@ async def crawl_and_upload(source: CrawlSource) -> list[dict]:
     visited, pdf_links = set(), []
 
     async def crawl_page(url: str, depth: int):
-        if url in visited or depth > source.max_depth: return
+        if url in visited or depth > source.max_depth:
+            return
         visited.add(url)
         try:
             html = await (_fetch_playwright(url) if source.use_browser else _fetch_httpx(url, source.headers))
         except Exception as e:
-            logger.error(f"  ✗ {url}: {e}"); return
+            logger.error(f"  ✗ {url}: {e}")
+            return
         new = [p for p in _extract_pdf_links(html, url, source)
                if p["url"] not in {x["url"] for x in pdf_links}]
         pdf_links.extend(new)
-        if new: logger.info(f"  🔗 {len(new)} PDFs em {url}")
+        if new:
+            logger.info(f"  🔗 {len(new)} PDFs em {url}")
         if depth < source.max_depth:
             for sub in _extract_sub_links(html, url):
                 await crawl_page(sub, depth + 1)
                 await asyncio.sleep(0.5)
 
     await crawl_page(source.url, 0)
-    logger.info(f"  Total: {len(pdf_links)} PDFs")
+    logger.info(f"  Total: {len(pdf_links)} PDFs encontrados")
 
     results = []
     for item in pdf_links:
         url, title = item["url"], item.get("title", "")
         filename = _url_to_filename(url, title)
 
-        # Camada 1: URL hash
+        # C1: URL hash
         existing = _url_already_downloaded(url)
         if existing:
             logger.debug(f"  ⏭ [C1] {filename}")
@@ -262,7 +441,7 @@ async def crawl_and_upload(source: CrawlSource) -> list[dict]:
             results.append({"file": filename, "status": "skipped", "reason": "url_in_log"})
             continue
 
-        # Camada 2: nome no Drive
+        # C2: nome no Drive
         if _pdf_exists_in_folder(svc, filename, folder_id):
             logger.debug(f"  ⏭ [C2] {filename}")
             _log_crawl(url, filename, source.folder_name, "downloaded", source.url)
@@ -278,28 +457,29 @@ async def crawl_and_upload(source: CrawlSource) -> list[dict]:
             results.append({"file": filename, "status": "error"})
             continue
 
-        # Camada 3: hash do conteúdo
+        # C3: hash do conteúdo
         c_hash = _hash_content(pdf_bytes)
         dup = _content_already_exists(c_hash)
         if dup:
             logger.debug(f"  ⏭ [C3] conteúdo duplicado de '{dup['filename']}'")
             _log_crawl(url, filename, source.folder_name, "downloaded", source.url,
-                       dup.get("drive_file_id", ""), len(pdf_bytes)//1024, c_hash)
+                       dup.get("drive_file_id", ""), len(pdf_bytes) // 1024, c_hash)
             results.append({"file": filename, "status": "skipped", "reason": "content_duplicate"})
             continue
 
-        # Upload
+        # Upload Drive
         try:
             drive_id = _upload_bytes_to_drive(svc, pdf_bytes, filename, folder_id)
             size_kb = len(pdf_bytes) // 1024
-            logger.success(f"  ✓ {filename} ({size_kb}KB)")
+            logger.success(f"  ✓ {filename} ({size_kb} KB)")
             _log_crawl(url, filename, source.folder_name, "downloaded",
                        source.url, drive_id, size_kb, c_hash)
             results.append({"file": filename, "status": "uploaded",
                             "drive_id": drive_id, "size_kb": size_kb})
         except Exception as e:
             logger.error(f"  ✗ Upload: {e}")
-            _log_crawl(url, filename, source.folder_name, "error", source.url, error_msg=str(e))
+            _log_crawl(url, filename, source.folder_name, "error",
+                       source.url, error_msg=str(e))
             results.append({"file": filename, "status": "error", "error": str(e)})
 
         await asyncio.sleep(1)
