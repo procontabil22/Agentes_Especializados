@@ -1,14 +1,11 @@
 # railway.toml — FinTax Agents
-# Docs: https://docs.railway.app/reference/config-as-code
 
 [build]
 builder = "dockerfile"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# startCommand removido intencionalmente:
-# o CMD do Dockerfile já cuida do start com expansão correta de $PORT.
-# Manter startCommand aqui E CMD no Dockerfile causava conflito no Railway.
+# startCommand removido: o CMD do Dockerfile cuida do start com $PORT expandido
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 3
 healthcheckPath = "/health"

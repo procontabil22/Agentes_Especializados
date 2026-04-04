@@ -1,5 +1,5 @@
 """
-app/main.py — FastAPI FinTax Agents
+main.py — FastAPI FinTax Agents
 O /health responde imediatamente sem depender de nenhum serviço externo.
 Todos os clientes externos são inicializados lazy, apenas quando usados.
 """
@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from pydantic import BaseModel
 
-from config.settings import settings
+from settings import settings  # ← flat import
 
 # ── Estado global ─────────────────────────────────────────────────────────────
 _index_status = {"last_run": None, "running": False, "last_report": None}
@@ -31,7 +31,7 @@ async def _run_indexing_job(folder: str | None = None):
     _index_status["running"] = True
     _index_status["last_run"] = datetime.utcnow().isoformat()
     try:
-        from app.orchestrator import run_indexing
+        from orchestrator import run_indexing  # ← flat import
         report = run_indexing(folder_filter=folder)
         _index_status["last_report"] = report
     finally:
@@ -40,7 +40,6 @@ async def _run_indexing_job(folder: str | None = None):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Inicia cron de indexação automática
     try:
         parts = settings.AUTO_DOWNLOAD_CRON.split()
         if len(parts) == 5:
@@ -98,7 +97,6 @@ class IndexRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    """Healthcheck — responde imediatamente sem chamar serviços externos."""
     return {
         "status": "ok",
         "service": "fintax-agents",
@@ -109,13 +107,13 @@ def health():
 
 @app.get("/agents")
 def agents_list():
-    from app.agents import list_agents
+    from agents import list_agents  # ← flat import
     return {"agents": list_agents()}
 
 
 @app.get("/agents/{agent_id}")
 def agent_detail(agent_id: str):
-    from app.agents import get_agent
+    from agents import get_agent  # ← flat import
     agent = get_agent(agent_id)
     if not agent:
         raise HTTPException(404, f"Agente '{agent_id}' não encontrado")
@@ -133,10 +131,10 @@ async def chat(
     x_api_key: Optional[str] = Header(None),
 ):
     _check_auth(x_api_key)
-    from app.agents import get_agent
+    from agents import get_agent  # ← flat import
     if not get_agent(agent_id):
         raise HTTPException(404, f"Agente '{agent_id}' não encontrado")
-    from app.chat import ask_agent
+    from chat import ask_agent  # ← flat import
     return await ask_agent(agent_id, body.question, body.history)
 
 
@@ -174,7 +172,7 @@ def index_status(x_api_key: Optional[str] = Header(None)):
 @app.get("/crawler/sources")
 def crawler_sources(x_api_key: Optional[str] = Header(None)):
     _check_auth(x_api_key)
-    from app.crawler import CRAWL_SOURCES
+    from crawler import CRAWL_SOURCES  # ← flat import
     return {"sources": [
         {"url": s.url, "folder": s.folder_name,
          "description": s.description, "use_browser": s.use_browser}
@@ -191,7 +189,7 @@ async def crawler_run(
     _check_auth(x_api_key)
 
     async def _job():
-        from app.crawler import run_crawler
+        from crawler import run_crawler  # ← flat import
         results = await run_crawler(source_filter=folder)
         uploaded = sum(1 for r in results if r["status"] == "uploaded")
         if uploaded > 0:

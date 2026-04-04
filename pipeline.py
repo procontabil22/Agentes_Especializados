@@ -1,5 +1,5 @@
 """
-app/pipeline.py — Pipeline: PDF → Docling → chunks parent-child → embeddings → Supabase
+pipeline.py — Pipeline: PDF → Docling → chunks parent-child → embeddings → Supabase
 
 Estratégia Parent-Child:
   • PARENT  (~3 000 chars) — bloco semântico completo (artigo, seção, cláusula).
@@ -7,16 +7,6 @@ Estratégia Parent-Child:
   • CHILD   (~500  chars) — subdivisão do parent, COM embedding.
             Usado na busca vetorial por similaridade.
             Aponta para o parent via parent_id.
-
-Fluxo de busca (chat.py):
-  1. embed(query) → busca children por similaridade
-  2. coleta parent_ids distintos dos children encontrados
-  3. retorna conteúdo dos parents → contexto para o LLM
-
-Retrocompatibilidade:
-  Documentos indexados com o pipeline antigo ficam com chunk_level='flat'.
-  A função match_documents no Supabase retorna 'child' + 'flat',
-  portanto o chat continua funcionando durante a re-indexação gradual.
 """
 
 import hashlib
@@ -29,16 +19,13 @@ from typing import Any
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from loguru import logger
 
-from config.settings import settings
+from settings import settings  # ← flat import
 
-# ── Tamanhos dos chunks (em caracteres) ───────────────────────────────────────
-# CHUNK_SIZE e CHUNK_OVERLAP em settings.py são em tokens → multiplicamos por 4
-# (média de 4 chars/token para português jurídico)
-
-_PARENT_SIZE    = settings.CHUNK_SIZE * 12   # ~3 000 chars ≈ 750 tokens
+# ── Tamanhos dos chunks ───────────────────────────────────────────────────────
+_PARENT_SIZE    = settings.CHUNK_SIZE * 12
 _PARENT_OVERLAP = 100
-_CHILD_SIZE     = settings.CHUNK_SIZE * 2    #   ~500 chars ≈ 125 tokens
-_CHILD_OVERLAP  = settings.CHUNK_OVERLAP * 2 #   ~100 chars
+_CHILD_SIZE     = settings.CHUNK_SIZE * 2
+_CHILD_OVERLAP  = settings.CHUNK_OVERLAP * 2
 
 
 # ── Clientes lazy ─────────────────────────────────────────────────────────────
@@ -97,32 +84,18 @@ def _already_indexed(table: str, file_hash: str) -> bool:
 # ── Chunking parent-child ─────────────────────────────────────────────────────
 
 def _split_markdown(markdown: str, source_meta: dict) -> tuple[list[dict], list[dict]]:
-    """
-    Retorna (parents, children).
-
-    Cada parent:
-        {content, metadata, chunk_level='parent', parent_id, chunk_index}
-        → sem embedding
-
-    Cada child:
-        {content, metadata, chunk_level='child', parent_id, chunk_index}
-        → com embedding (gerado em process_pdf)
-    """
-    # 1. Divide por cabeçalhos Markdown (H1 / H2 / H3)
     h_splitter = MarkdownHeaderTextSplitter(
         headers_to_split_on=[("#", "h1"), ("##", "h2"), ("###", "h3")],
         strip_headers=False,
     )
     sections = h_splitter.split_text(markdown)
 
-    # 2. Splitter de parents — blocos grandes e coesos
     parent_splitter = RecursiveCharacterTextSplitter(
         chunk_size=_PARENT_SIZE,
         chunk_overlap=_PARENT_OVERLAP,
         separators=["\n\n\n", "\n\n", "\n", ". ", " ", ""],
     )
 
-    # 3. Splitter de children — subdivisões para busca vetorial precisa
     child_splitter = RecursiveCharacterTextSplitter(
         chunk_size=_CHILD_SIZE,
         chunk_overlap=_CHILD_OVERLAP,
@@ -158,7 +131,6 @@ def _split_markdown(markdown: str, source_meta: dict) -> tuple[list[dict], list[
         })
         parent_idx += 1
 
-        # Gera children a partir do conteúdo do parent
         for text in child_splitter.split_text(parent_doc.page_content):
             if not text.strip():
                 continue
@@ -227,12 +199,12 @@ def process_pdf(
         logger.info("  ⏭ Já indexado (mesmo hash)")
         return {"status": "skipped", "file": file_name}
 
-    # ── 1. Docling: PDF → Markdown estruturado ────────────────────────────────
+    # 1. Docling: PDF → Markdown estruturado
     result   = _converter().convert(str(pdf_path))
     markdown = result.document.export_to_markdown()
     pages    = len(result.document.pages) if result.document.pages else 0
 
-    # ── 2. Chunking parent-child ──────────────────────────────────────────────
+    # 2. Chunking parent-child
     source_meta = {
         "file_name":   file_name,
         "file_id":     file_id,
@@ -245,35 +217,26 @@ def process_pdf(
     }
 
     parents, children = _split_markdown(markdown, source_meta)
-    logger.info(
-        f"  → {len(parents)} parents | {len(children)} children | {pages} páginas"
-    )
+    logger.info(f"  → {len(parents)} parents | {len(children)} children | {pages} páginas")
 
-    # ── 3. Embeddings — somente nos children ──────────────────────────────────
+    # 3. Embeddings — somente nos children
     child_texts = [c["content"] for c in children]
     child_vecs: list[list[float]] = []
 
     for i in range(0, len(child_texts), settings.BATCH_SIZE):
         batch = child_texts[i: i + settings.BATCH_SIZE]
         child_vecs.extend(_embeddings().embed_documents(batch))
-        logger.debug(
-            f"  Embeddings: {min(i + settings.BATCH_SIZE, len(child_texts))}/{len(child_texts)}"
-        )
+        logger.debug(f"  Embeddings: {min(i + settings.BATCH_SIZE, len(child_texts))}/{len(child_texts)}")
 
-    # ── 4. Upsert parents (sem embedding) ─────────────────────────────────────
+    # 4. Upsert parents (sem embedding)
     parent_rows = [_build_row(p, None, source_meta) for p in parents]
     _upsert_batch(table_name, parent_rows)
     logger.debug(f"  ✓ {len(parent_rows)} parents gravados")
 
-    # ── 5. Upsert children (com embedding) ────────────────────────────────────
-    child_rows = [
-        _build_row(c, v, source_meta)
-        for c, v in zip(children, child_vecs)
-    ]
+    # 5. Upsert children (com embedding)
+    child_rows = [_build_row(c, v, source_meta) for c, v in zip(children, child_vecs)]
     _upsert_batch(table_name, child_rows)
-    logger.success(
-        f"  ✓ {len(child_rows)} children gravados em '{table_name}'"
-    )
+    logger.success(f"  ✓ {len(child_rows)} children gravados em '{table_name}'")
 
     return {
         "status":   "ok",

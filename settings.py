@@ -1,5 +1,5 @@
 """
-config/settings.py
+settings.py
 Centraliza todas as variáveis de ambiente do projeto.
 Configure no Railway: Settings > Variables
 """
@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
     OPENAI_API_KEY: str
-    EMBEDDING_MODEL: str = "text-embedding-3-small"   # 1536 dims
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
     EMBEDDING_DIMENSIONS: int = 1536
 
     # ── Anthropic (Claude) — agentes de chat ──────────────────────────────────
@@ -19,14 +19,13 @@ class Settings(BaseSettings):
 
     # ── Supabase ──────────────────────────────────────────────────────────────
     SUPABASE_URL: str
-    SUPABASE_SERVICE_KEY: str          # service_role key (não anon)
+    SUPABASE_SERVICE_KEY: str
 
     # ── Google Drive ──────────────────────────────────────────────────────────
-    GOOGLE_CREDENTIALS_JSON: str       # JSON da Service Account (raw ou base64)
-    GDRIVE_ROOT_FOLDER_ID: str         # ID da pasta raiz no Drive
+    GOOGLE_CREDENTIALS_JSON: str
+    GDRIVE_ROOT_FOLDER_ID: str
 
     # ── Mapeamento pasta Drive → tabela Supabase (5 agentes) ──────────────────
-    # Nomes corrigidos para os nomes reais das tabelas no Supabase
     FOLDER_TABLE_MAP: str = (
         "contabil:kb_analista_contabil,"
         "fiscal:kb_analista_fiscal,"
@@ -36,13 +35,13 @@ class Settings(BaseSettings):
     )
 
     # ── Pipeline ──────────────────────────────────────────────────────────────
-    CHUNK_SIZE: int = 1000             # tokens por chunk
-    CHUNK_OVERLAP: int = 200           # overlap para preservar contexto
-    BATCH_SIZE: int = 50               # embeddings por batch na OpenAI
+    CHUNK_SIZE: int = 1000
+    CHUNK_OVERLAP: int = 200
+    BATCH_SIZE: int = 50
 
     # ── Crawler ───────────────────────────────────────────────────────────────
     AUTO_DOWNLOAD_ENABLED: bool = True
-    AUTO_DOWNLOAD_CRON: str = "0 3 * * 1"   # toda segunda-feira às 3h
+    AUTO_DOWNLOAD_CRON: str = "0 3 * * 1"
 
     # ── API ───────────────────────────────────────────────────────────────────
     API_SECRET_KEY: str = "change-me-in-railway"
