@@ -3,6 +3,7 @@ langchain==0.3.7
 langchain-community==0.3.7
 langchain-openai==0.2.7
 langchain-anthropic==0.3.0
+langchain-google-genai==2.0.7
 langchain-text-splitters==0.3.2
 
 # ── Docling (PDF → Markdown estruturado com preservação de layout/tabelas) ───
@@ -17,7 +18,7 @@ google-api-python-client==2.151.0
 google-auth-httplib2==0.2.0
 google-auth-oauthlib==1.2.1
 
-# ── OpenAI (embeddings text-embedding-3-small) ───────────────────────────────
+# ── OpenAI (embeddings text-embedding-3-small + fallback GPT) ────────────────
 openai==1.54.3
 tiktoken==0.8.0
 

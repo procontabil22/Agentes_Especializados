@@ -10,12 +10,16 @@ from typing import Optional
 class Settings(BaseSettings):
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
-    OPENAI_API_KEY: str
+    OPENAI_API_KEY: Optional[str] = None
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     EMBEDDING_DIMENSIONS: int = 1536
 
-    # ── Anthropic (Claude) — agentes de chat ──────────────────────────────────
-    ANTHROPIC_API_KEY: Optional[str] = None
+    # ── LLMs de chat (configure ao menos um) ─────────────────────────────────
+    # Ordem de prioridade: Anthropic → OpenAI → Gemini → Grok → DeepSeek
+    ANTHROPIC_API_KEY: Optional[str] = None   # Claude
+    GEMINI_API_KEY:    Optional[str] = None   # Google Gemini
+    GROK_API_KEY:      Optional[str] = None   # xAI Grok
+    DEEPSEEK_API_KEY:  Optional[str] = None   # DeepSeek
 
     # ── Supabase ──────────────────────────────────────────────────────────────
     SUPABASE_URL: str

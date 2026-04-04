@@ -40,19 +40,73 @@ def _embeddings():
 
 
 def _get_llm():
-    """Usa Claude se ANTHROPIC_API_KEY configurada, senão GPT-4o-mini."""
+    """
+    Seleciona o LLM disponível na seguinte ordem de prioridade:
+      1. Anthropic (Claude)
+      2. OpenAI (GPT)
+      3. Google Gemini
+      4. Grok (xAI)
+      5. DeepSeek
+
+    Usa o primeiro que tiver a variável de ambiente configurada.
+    """
+
+    # 1. Anthropic
     if settings.ANTHROPIC_API_KEY:
         from langchain_anthropic import ChatAnthropic
+        logger.debug("LLM selecionado: Anthropic (Claude)")
         return ChatAnthropic(
             model="claude-haiku-4-5-20251001",
             anthropic_api_key=settings.ANTHROPIC_API_KEY,
             max_tokens=2048,
         )
-    from langchain_openai import ChatOpenAI
-    return ChatOpenAI(
-        model="gpt-4o-mini",
-        openai_api_key=settings.OPENAI_API_KEY,
-        max_tokens=2048,
+
+    # 2. OpenAI
+    if settings.OPENAI_API_KEY:
+        from langchain_openai import ChatOpenAI
+        logger.debug("LLM selecionado: OpenAI (GPT-4o-mini)")
+        return ChatOpenAI(
+            model="gpt-4o-mini",
+            openai_api_key=settings.OPENAI_API_KEY,
+            max_tokens=2048,
+        )
+
+    # 3. Google Gemini
+    if settings.GEMINI_API_KEY:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        logger.debug("LLM selecionado: Google Gemini")
+        return ChatGoogleGenerativeAI(
+            model="gemini-1.5-flash",
+            google_api_key=settings.GEMINI_API_KEY,
+            max_output_tokens=2048,
+        )
+
+    # 4. Grok (xAI) — usa interface compatível com OpenAI
+    if settings.GROK_API_KEY:
+        from langchain_openai import ChatOpenAI
+        logger.debug("LLM selecionado: Grok (xAI)")
+        return ChatOpenAI(
+            model="grok-beta",
+            openai_api_key=settings.GROK_API_KEY,
+            openai_api_base="https://api.x.ai/v1",
+            max_tokens=2048,
+        )
+
+    # 5. DeepSeek — usa interface compatível com OpenAI
+    if settings.DEEPSEEK_API_KEY:
+        from langchain_openai import ChatOpenAI
+        logger.debug("LLM selecionado: DeepSeek")
+        return ChatOpenAI(
+            model="deepseek-chat",
+            openai_api_key=settings.DEEPSEEK_API_KEY,
+            openai_api_base="https://api.deepseek.com/v1",
+            max_tokens=2048,
+        )
+
+    raise RuntimeError(
+        "Nenhuma chave de API de LLM configurada. "
+        "Configure ao menos uma das variáveis: ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+        "GEMINI_API_KEY, GROK_API_KEY ou DEEPSEEK_API_KEY."
     )
 
 
