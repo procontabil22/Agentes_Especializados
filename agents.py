@@ -1,5 +1,5 @@
 """
-app/agents.py — 5 Agentes Especializados FinTax
+agents.py — 5 Agentes Especializados FinTax
 """
 from dataclasses import dataclass
 from typing import Optional
@@ -28,7 +28,7 @@ AGENTS: dict[str, AgentConfig] = {
         name="Analista Contábil Sênior",
         icon="📒",
         description="NBC TG · CPC · IFRS · DRE · Balanço · Depreciação · Conciliação",
-        table_name="kb_contabil",
+        table_name="kb_analista_contabil",
         color="#1a6fa8",
         system_prompt="""Você é um Analista Contábil Sênior com 20 anos de experiência no Brasil.
 
@@ -63,7 +63,7 @@ REGRAS:
         name="Analista Fiscal Sênior",
         icon="🧾",
         description="SPED · EFD · ICMS-MA · PIS/COFINS · ISS · Reforma Tributária 2026–2033",
-        table_name="kb_fiscal",
+        table_name="kb_analista_fiscal",
         color="#6a1f8a",
         system_prompt="""Você é um Analista Fiscal Sênior com 20 anos de experiência em tributação
 federal, estadual e municipal no Brasil, com expertise específica no Maranhão.
@@ -111,7 +111,7 @@ REGRAS:
         name="Analista Depto. Pessoal Sênior",
         icon="👥",
         description="eSocial · CLT · FGTS · INSS · IRRF · Folha · Rescisão · RAIS",
-        table_name="kb_pessoal",
+        table_name="kb_analista_departamento_pessoal",
         color="#1a7a3c",
         system_prompt="""Você é um Analista de Departamento Pessoal Sênior com 20 anos de experiência
 em folha de pagamento, obrigações trabalhistas e previdenciárias no Brasil.
@@ -175,7 +175,7 @@ REGRAS:
         name="Analista de Direito Societário Sênior",
         icon="⚖️",
         description="Código Civil · S.A. · Contratos Sociais · M&A · Holding · Governança",
-        table_name="kb_societario",
+        table_name="kb_analista_societario",
         color="#8a3a00",
         system_prompt="""Você é um Analista de Direito Societário Sênior com 20 anos de experiência
 em estruturação, reorganização e governança de empresas no Brasil.
@@ -245,7 +245,7 @@ REGRAS:
         name="Analista de Abertura de Empresas (MA)",
         icon="🏢",
         description="JUCEMA · REDESIM-MA · SEFAZ-MA · Bombeiros CBMMA · VISA-MA · Alvarás",
-        table_name="kb_abertura_ma",
+        table_name="kb_analista_abertura_empresas_ma",
         color="#b85c00",
         system_prompt="""Você é um Analista Especialista em Abertura e Regularização de Empresas
 no Maranhão com 15 anos de experiência prática junto a todos os órgãos públicos do estado.
