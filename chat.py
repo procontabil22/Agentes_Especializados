@@ -17,8 +17,8 @@ from functools import lru_cache
 
 from loguru import logger
 
-from agents import AgentConfig, get_agent  # ← flat import
-from settings import settings              # ← flat import
+from agents import AgentConfig, get_agent
+from settings import settings
 
 
 # ── Clientes lazy ─────────────────────────────────────────────────────────────
@@ -39,75 +39,88 @@ def _embeddings():
     )
 
 
-def _get_llm():
+def _build_llm_candidates() -> list[tuple[str, object]]:
     """
-    Seleciona o LLM disponível na seguinte ordem de prioridade:
-      1. Anthropic (Claude)
-      2. OpenAI (GPT)
-      3. Google Gemini
-      4. Grok (xAI)
-      5. DeepSeek
-
-    Usa o primeiro que tiver a variável de ambiente configurada.
+    Retorna lista de (nome, instância_llm) na ordem de prioridade.
+    Só inclui os que têm chave configurada.
     """
+    candidates = []
 
-    # 1. Anthropic
     if settings.ANTHROPIC_API_KEY:
-        from langchain_anthropic import ChatAnthropic
-        logger.debug("LLM selecionado: Anthropic (Claude)")
-        return ChatAnthropic(
-            model="claude-haiku-4-5-20251001",
-            anthropic_api_key=settings.ANTHROPIC_API_KEY,
-            max_tokens=2048,
-        )
+        try:
+            from langchain_anthropic import ChatAnthropic
+            candidates.append(("Anthropic (Claude)", ChatAnthropic(
+                model="claude-haiku-4-5-20251001",
+                anthropic_api_key=settings.ANTHROPIC_API_KEY,
+                max_tokens=2048,
+            )))
+        except Exception as e:
+            logger.warning(f"Não foi possível instanciar Anthropic: {e}")
 
-    # 2. OpenAI
     if settings.OPENAI_API_KEY:
-        from langchain_openai import ChatOpenAI
-        logger.debug("LLM selecionado: OpenAI (GPT-4o-mini)")
-        return ChatOpenAI(
-            model="gpt-4o-mini",
-            openai_api_key=settings.OPENAI_API_KEY,
-            max_tokens=2048,
-        )
+        try:
+            from langchain_openai import ChatOpenAI
+            candidates.append(("OpenAI (GPT-4o-mini)", ChatOpenAI(
+                model="gpt-4o-mini",
+                openai_api_key=settings.OPENAI_API_KEY,
+                max_tokens=2048,
+            )))
+        except Exception as e:
+            logger.warning(f"Não foi possível instanciar OpenAI: {e}")
 
-    # 3. Google Gemini
     if settings.GEMINI_API_KEY:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        logger.debug("LLM selecionado: Google Gemini")
-        return ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
-            google_api_key=settings.GEMINI_API_KEY,
-            max_output_tokens=2048,
-        )
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            candidates.append(("Google Gemini", ChatGoogleGenerativeAI(
+                model="gemini-1.5-flash",
+                google_api_key=settings.GEMINI_API_KEY,
+                max_output_tokens=2048,
+            )))
+        except Exception as e:
+            logger.warning(f"Não foi possível instanciar Gemini: {e}")
 
-    # 4. Grok (xAI) — usa interface compatível com OpenAI
     if settings.GROK_API_KEY:
-        from langchain_openai import ChatOpenAI
-        logger.debug("LLM selecionado: Grok (xAI)")
-        return ChatOpenAI(
-            model="grok-beta",
-            openai_api_key=settings.GROK_API_KEY,
-            openai_api_base="https://api.x.ai/v1",
-            max_tokens=2048,
-        )
+        try:
+            from langchain_openai import ChatOpenAI
+            candidates.append(("Grok (xAI)", ChatOpenAI(
+                model="grok-beta",
+                openai_api_key=settings.GROK_API_KEY,
+                openai_api_base="https://api.x.ai/v1",
+                max_tokens=2048,
+            )))
+        except Exception as e:
+            logger.warning(f"Não foi possível instanciar Grok: {e}")
 
-    # 5. DeepSeek — usa interface compatível com OpenAI
     if settings.DEEPSEEK_API_KEY:
-        from langchain_openai import ChatOpenAI
-        logger.debug("LLM selecionado: DeepSeek")
-        return ChatOpenAI(
-            model="deepseek-chat",
-            openai_api_key=settings.DEEPSEEK_API_KEY,
-            openai_api_base="https://api.deepseek.com/v1",
-            max_tokens=2048,
-        )
+        try:
+            from langchain_openai import ChatOpenAI
+            candidates.append(("DeepSeek", ChatOpenAI(
+                model="deepseek-chat",
+                openai_api_key=settings.DEEPSEEK_API_KEY,
+                openai_api_base="https://api.deepseek.com/v1",
+                max_tokens=2048,
+            )))
+        except Exception as e:
+            logger.warning(f"Não foi possível instanciar DeepSeek: {e}")
 
-    raise RuntimeError(
-        "Nenhuma chave de API de LLM configurada. "
-        "Configure ao menos uma das variáveis: ANTHROPIC_API_KEY, OPENAI_API_KEY, "
-        "GEMINI_API_KEY, GROK_API_KEY ou DEEPSEEK_API_KEY."
-    )
+    return candidates
+
+
+def _is_quota_error(e: Exception) -> bool:
+    """Retorna True se o erro indica saldo insuficiente ou autenticação inválida."""
+    msg = str(e).lower()
+    return any(kw in msg for kw in [
+        "credit balance",
+        "insufficient_quota",
+        "quota",
+        "billing",
+        "rate limit",
+        "invalid api key",
+        "authentication",
+        "401",
+        "402",
+        "429",
+    ])
 
 
 # ── Retrieval parent-child ────────────────────────────────────────────────────
@@ -245,11 +258,35 @@ Se o contexto não for suficiente para responder com segurança, informe clarame
             messages.append(AIMessage(content=msg["content"]))
     messages.append(HumanMessage(content=question))
 
-    response = await _get_llm().ainvoke(messages)
+    candidates = _build_llm_candidates()
+    if not candidates:
+        raise RuntimeError(
+            "Nenhuma chave de API de LLM configurada. "
+            "Configure ao menos uma: ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+            "GEMINI_API_KEY, GROK_API_KEY ou DEEPSEEK_API_KEY."
+        )
 
-    return {
-        "answer":   response.content,
-        "sources":  _build_sources(children),
-        "agent":    agent.name,
-        "agent_id": agent_id,
-    }
+    last_error = None
+    for name, llm in candidates:
+        try:
+            logger.info(f"Tentando LLM: {name}")
+            response = await llm.ainvoke(messages)
+            logger.info(f"LLM utilizado com sucesso: {name}")
+            return {
+                "answer":   response.content,
+                "sources":  _build_sources(children),
+                "agent":    agent.name,
+                "agent_id": agent_id,
+                "llm":      name,
+            }
+        except Exception as e:
+            if _is_quota_error(e):
+                logger.warning(f"LLM '{name}' sem crédito/quota — tentando próximo. Erro: {e}")
+                last_error = e
+                continue
+            raise
+
+    raise RuntimeError(
+        f"Todos os LLMs configurados falharam por falta de crédito/quota. "
+        f"Último erro: {last_error}"
+    )
