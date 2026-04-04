@@ -6,6 +6,7 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV TZ=America/Sao_Paulo
 
 # ── Python 3.11 + dependências de sistema ────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -21,6 +22,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     ca-certificates \
+    tzdata \
+    && ln -fs /usr/share/zoneinfo/America/Sao_Paulo /etc/localtime \
+    && dpkg-reconfigure -f noninteractive tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
