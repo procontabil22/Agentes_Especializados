@@ -2,11 +2,12 @@
 orchestrator.py — Orquestrador do pipeline de indexação
 
 Responsabilidades:
-  1. Conecta ao Google Drive
-  2. Lista arquivos em cada pasta (por agente)
-  3. Para cada arquivo PDF, chama pipeline.process_pdf()
-  4. Suporta filtro por pasta (folder_filter)
-  5. Retorna relatório detalhado da execução
+  1. Baixa fontes diretas (Planalto, CFC, RFB etc.) via downloader.py
+  2. Crawla portais dinâmicos (SEFAZ-MA, DREI etc.) via crawler.py
+  3. Conecta ao Google Drive e lista arquivos por pasta (por agente)
+  4. Para cada arquivo PDF/HTML, chama pipeline.process_pdf()
+  5. Suporta filtro por pasta (folder_filter)
+  6. Retorna relatório detalhado da execução
 
 Chamado por:
   - main.py → _run_indexing_job()  (scheduler automático + endpoint /index)
@@ -24,8 +25,9 @@ from typing import Optional
 from loguru import logger
 
 from gdrive import _get_service, _get_or_create_folder, list_files_in_folder, download_file_bytes  # ← flat import
-from pipeline import process_pdf   # ← flat import
-from settings import settings      # ← flat import
+from pipeline import process_pdf        # ← flat import
+from settings import settings           # ← flat import
+from downloader import download_public_sources  # ← flat import
 
 
 # ── Tipos de arquivo suportados ───────────────────────────────────────────────
@@ -68,6 +70,34 @@ def run_indexing(folder_filter: Optional[str] = None) -> dict:
     if not folder_table_map:
         logger.error("FOLDER_TABLE_MAP não configurado ou vazio.")
         return {"status": "error", "message": "FOLDER_TABLE_MAP não configurado"}
+
+    # ── Passo 1: Download direto (Planalto, CFC, RFB etc.) ───────────────────
+    logger.info("📥 Iniciando download de fontes diretas (downloader)...")
+    try:
+        dl_results = download_public_sources()
+        dl_uploaded = sum(1 for r in dl_results if r.get("status") == "uploaded")
+        dl_skipped  = sum(1 for r in dl_results if r.get("status") == "skipped")
+        dl_errors   = sum(1 for r in dl_results if r.get("status") == "error")
+        logger.info(f"  ✓ Downloader: {dl_uploaded} novos | {dl_skipped} pulados | {dl_errors} erros")
+        report["download"] = {"uploaded": dl_uploaded, "skipped": dl_skipped, "errors": dl_errors}
+    except Exception as e:
+        logger.error(f"  ✗ Downloader falhou: {e}")
+        report["download"] = {"error": str(e)}
+
+    # ── Passo 2: Crawler (SEFAZ-MA, DREI, CPC, eSocial etc.) ─────────────────
+    logger.info("🌐 Iniciando crawler de portais dinâmicos...")
+    try:
+        import asyncio
+        from crawler import run_crawler
+        crawl_results = asyncio.run(run_crawler(source_filter=folder_filter))
+        cr_uploaded = sum(1 for r in crawl_results if r.get("status") == "uploaded")
+        cr_skipped  = sum(1 for r in crawl_results if r.get("status") == "skipped")
+        cr_errors   = sum(1 for r in crawl_results if r.get("status") == "error")
+        logger.info(f"  ✓ Crawler: {cr_uploaded} novos | {cr_skipped} pulados | {cr_errors} erros")
+        report["crawler"] = {"uploaded": cr_uploaded, "skipped": cr_skipped, "errors": cr_errors}
+    except Exception as e:
+        logger.error(f"  ✗ Crawler falhou: {e}")
+        report["crawler"] = {"error": str(e)}
 
     svc = _get_service()
     root_folder_id = settings.GDRIVE_ROOT_FOLDER_ID
