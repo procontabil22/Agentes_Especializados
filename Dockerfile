@@ -1,20 +1,35 @@
 # FinTax Agents — Dockerfile para Railway
-# Python 3.11 slim com Docling (OCR) + Playwright (portais JSF)
+# Base: Ubuntu 22.04 (Jammy) — suportado oficialmente pelo Playwright
 
-FROM python:3.11-slim
+FROM ubuntu:22.04
 
-# ── Dependências de sistema ───────────────────────────────────────────────────
-# Docling precisa: poppler (PDF rendering) + tesseract (OCR em PDFs escaneados)
-# Playwright precisa: chromium deps
+# Evita prompts interativos durante apt-get
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# ── Python 3.11 + dependências de sistema ────────────────────────────────────
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
+    python3.11-distutils \
     poppler-utils \
     tesseract-ocr \
     tesseract-ocr-por \
-    libgl1 \
+    libgl1-mesa-glx \
     libglib2.0-0 \
     curl \
     wget \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Garante que python3 aponta para 3.11
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+
+# Atualiza pip
+RUN python3 -m pip install --upgrade pip --quiet
 
 # ── Diretório de trabalho ─────────────────────────────────────────────────────
 WORKDIR /app
@@ -23,8 +38,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ── Playwright — instala Chromium após pip ────────────────────────────────────
-RUN playwright install chromium --with-deps
+# ── Playwright — Ubuntu 22.04 é suportado oficialmente ───────────────────────
+RUN playwright install chromium \
+    && playwright install-deps chromium
 
 # ── Código da aplicação ───────────────────────────────────────────────────────
 COPY . .
