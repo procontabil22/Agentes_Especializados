@@ -2,12 +2,11 @@
 orchestrator.py — Orquestrador do pipeline de indexação
 
 Responsabilidades:
-  1. Baixa fontes diretas (Planalto, CFC, RFB etc.) via downloader.py
-  2. Crawla portais dinâmicos (SEFAZ-MA, DREI etc.) via crawler.py
-  3. Conecta ao Google Drive e lista arquivos por pasta (por agente)
-  4. Para cada arquivo PDF/HTML, chama pipeline.process_pdf()
-  5. Suporta filtro por pasta (folder_filter)
-  6. Retorna relatório detalhado da execução
+  1. Conecta ao Google Drive
+  2. Lista arquivos em cada pasta (por agente)
+  3. Para cada arquivo PDF, chama pipeline.process_pdf()
+  4. Suporta filtro por pasta (folder_filter)
+  5. Retorna relatório detalhado da execução
 
 Chamado por:
   - main.py → _run_indexing_job()  (scheduler automático + endpoint /index)
@@ -71,10 +70,25 @@ def run_indexing(folder_filter: Optional[str] = None) -> dict:
         logger.error("FOLDER_TABLE_MAP não configurado ou vazio.")
         return {"status": "error", "message": "FOLDER_TABLE_MAP não configurado"}
 
+    svc = _get_service()
+    root_folder_id = settings.GDRIVE_ROOT_FOLDER_ID
+
+    report = {
+        "started_at":  started_at,
+        "folder_filter": folder_filter or "todas",
+        "folders":     {},
+        "totals": {
+            "processed": 0,
+            "skipped":   0,
+            "error":     0,
+            "total_files": 0,
+        },
+    }
+
     # ── Passo 1: Download direto (Planalto, CFC, RFB etc.) ───────────────────
     logger.info("📥 Iniciando download de fontes diretas (downloader)...")
     try:
-        dl_results = download_public_sources()
+        dl_results  = download_public_sources()
         dl_uploaded = sum(1 for r in dl_results if r.get("status") == "uploaded")
         dl_skipped  = sum(1 for r in dl_results if r.get("status") == "skipped")
         dl_errors   = sum(1 for r in dl_results if r.get("status") == "error")
@@ -98,21 +112,6 @@ def run_indexing(folder_filter: Optional[str] = None) -> dict:
     except Exception as e:
         logger.error(f"  ✗ Crawler falhou: {e}")
         report["crawler"] = {"error": str(e)}
-
-    svc = _get_service()
-    root_folder_id = settings.GDRIVE_ROOT_FOLDER_ID
-
-    report = {
-        "started_at":  started_at,
-        "folder_filter": folder_filter or "todas",
-        "folders":     {},
-        "totals": {
-            "processed": 0,
-            "skipped":   0,
-            "error":     0,
-            "total_files": 0,
-        },
-    }
 
     for folder_name, table_name in folder_table_map.items():
 

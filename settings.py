@@ -31,11 +31,11 @@ class Settings(BaseSettings):
 
     # ── Mapeamento pasta Drive → tabela Supabase (5 agentes) ──────────────────
     FOLDER_TABLE_MAP: str = (
-        "contabil:kb_analista_contabil,"
-        "fiscal:kb_analista_fiscal,"
-        "pessoal:kb_analista_departamento_pessoal,"
-        "societario:kb_analista_societario,"
-        "abertura_ma:kb_analista_abertura_empresas_ma"
+        "analista_contabil:kb_analista_contabil,"
+        "analista_fiscal:kb_analista_fiscal,"
+        "analista_departamento_pessoal:kb_analista_departamento_pessoal,"
+        "analista_societario:kb_analista_societario,"
+        "analista_abertura_empresas:kb_analista_abertura_empresas_ma"
     )
 
     # ── Pipeline ──────────────────────────────────────────────────────────────

@@ -57,7 +57,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
 
     CrawlSource(
         url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=95",
-        folder_name="fiscal",
+        folder_name="analista_fiscal",
         description="SEFAZ-MA — RICMS-MA (Decreto 19.714/2003 + atualizações)",
         use_browser=True,
         direct_pdf_pattern=r"/portalsefaz/pdf\?codigo=\d+",
@@ -65,7 +65,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
     ),
     CrawlSource(
         url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=98",
-        folder_name="fiscal",
+        folder_name="analista_fiscal",
         description="SEFAZ-MA — Anexos do RICMS-MA",
         use_browser=True,
         direct_pdf_pattern=r"/portalsefaz/pdf\?codigo=\d+",
@@ -73,7 +73,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
     ),
     CrawlSource(
         url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=97",
-        folder_name="fiscal",
+        folder_name="analista_fiscal",
         description="SEFAZ-MA — Legislação tributária estadual MA",
         use_browser=True,
         direct_pdf_pattern=r"/portalsefaz/pdf\?codigo=\d+",
@@ -81,7 +81,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
     ),
     CrawlSource(
         url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=100",
-        folder_name="fiscal",
+        folder_name="analista_fiscal",
         description="SEFAZ-MA — Instruções Normativas e Portarias GABIN",
         use_browser=True,
         direct_pdf_pattern=r"/portalsefaz/pdf\?codigo=\d+",
@@ -94,7 +94,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
 
     CrawlSource(
         url="https://www.cpc.org.br/CPC/Documentos-Emitidos/Pronunciamentos",
-        folder_name="contabil",
+        folder_name="analista_contabil",
         description="CPC — Pronunciamentos Contábeis (CPC 00 ao CPC 48)",
         use_browser=False,
         pdf_pattern=r"\.pdf",
@@ -103,7 +103,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
     ),
     CrawlSource(
         url="https://www.cpc.org.br/CPC/Documentos-Emitidos/Interpretacoes",
-        folder_name="contabil",
+        folder_name="analista_contabil",
         description="CPC — Interpretações Técnicas (ICPC)",
         use_browser=False,
         pdf_pattern=r"\.pdf",
@@ -112,7 +112,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
     ),
     CrawlSource(
         url="https://www.cpc.org.br/CPC/Documentos-Emitidos/Orientacoes",
-        folder_name="contabil",
+        folder_name="analista_contabil",
         description="CPC — Orientações Técnicas (OCPC)",
         use_browser=False,
         pdf_pattern=r"\.pdf",
@@ -121,7 +121,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
     ),
     CrawlSource(
         url="https://cfc.org.br/tecnica/normas-brasileiras-de-contabilidade/nbc-tg-geral/",
-        folder_name="contabil",
+        folder_name="analista_contabil",
         description="CFC — NBC TG Gerais (normas técnicas de contabilidade)",
         use_browser=False,
         pdf_pattern=r"\.pdf",
@@ -130,7 +130,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
     ),
     CrawlSource(
         url="https://cfc.org.br/tecnica/normas-brasileiras-de-contabilidade/nbc-ta-auditoria-independente/",
-        folder_name="contabil",
+        folder_name="analista_contabil",
         description="CFC — NBC TA (Auditoria Independente)",
         use_browser=False,
         pdf_pattern=r"\.pdf",
@@ -144,7 +144,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
 
     CrawlSource(
         url="https://www.gov.br/esocial/pt-br/documentacao-tecnica/manuais",
-        folder_name="pessoal",
+        folder_name="analista_departamento_pessoal",
         description="eSocial — Manuais técnicos e layouts de eventos (S-xxxx)",
         use_browser=False,
         pdf_pattern=r"\.pdf",
@@ -153,7 +153,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
     ),
     CrawlSource(
         url="https://www.gov.br/trabalho-e-emprego/pt-br/acesso-a-informacao/participacao-social/conselhos-e-orgaos-colegiados/ctpp-nrs/portarias-aprovadas-pelo-menos-de-2019",
-        folder_name="pessoal",
+        folder_name="analista_departamento_pessoal",
         description="MTE — Normas Regulamentadoras (NR-01 a NR-38)",
         use_browser=False,
         pdf_pattern=r"\.pdf",
@@ -162,7 +162,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
     ),
     CrawlSource(
         url="https://www.gov.br/previdencia/pt-br/assuntos/previdencia-social/contato/legislacao",
-        folder_name="pessoal",
+        folder_name="analista_departamento_pessoal",
         description="Previdência Social — Legislação previdenciária (decretos e INs)",
         use_browser=False,
         pdf_pattern=r"\.pdf",
@@ -176,7 +176,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
 
     CrawlSource(
         url="https://drei.gov.br/pt-br/legislacao/instrucoes-normativas",
-        folder_name="societario",
+        folder_name="analista_societario",
         description="DREI — Instruções Normativas (atos registráveis, tipos societários)",
         use_browser=False,
         pdf_pattern=r"\.pdf",
@@ -185,7 +185,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
     ),
     CrawlSource(
         url="https://drei.gov.br/pt-br/legislacao/manuais-e-modelos",
-        folder_name="societario",
+        folder_name="analista_societario",
         description="DREI — Manuais e modelos de atos societários",
         use_browser=False,
         pdf_pattern=r"\.pdf",
@@ -199,7 +199,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
 
     CrawlSource(
         url="https://www.jucema.ma.gov.br/legislacao",
-        folder_name="abertura_ma",
+        folder_name="analista_abertura_empresas",
         description="JUCEMA — Legislação registral do Maranhão",
         use_browser=False,
         pdf_pattern=r"\.pdf",
@@ -208,7 +208,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
     ),
     CrawlSource(
         url="https://www.jucema.ma.gov.br/servicos/tabela-de-precos",
-        folder_name="abertura_ma",
+        folder_name="analista_abertura_empresas",
         description="JUCEMA — Tabela de preços e documentos exigidos",
         use_browser=False,
         pdf_pattern=r"\.pdf",
@@ -217,7 +217,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
     ),
     CrawlSource(
         url="https://www.cbm.ma.gov.br/instrucoes-tecnicas/",
-        folder_name="abertura_ma",
+        folder_name="analista_abertura_empresas",
         description="CBMMA — Instruções Técnicas (IT-01 a IT-34) — CLCB e AVCB",
         use_browser=False,
         pdf_pattern=r"\.pdf",
@@ -226,7 +226,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
     ),
     CrawlSource(
         url="https://drei.gov.br/pt-br/legislacao/instrucoes-normativas",
-        folder_name="abertura_ma",
+        folder_name="analista_abertura_empresas",
         description="DREI — INs para registro na JUCEMA",
         use_browser=False,
         pdf_pattern=r"\.pdf",
