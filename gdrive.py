@@ -12,6 +12,8 @@ from loguru import logger
 
 from settings import settings  # ← flat import
 
+SHARED_DRIVE_ID = "1B4uuIt4qTZdD_OdJ0HBh4EajgQ_8jH7E"
+
 
 @lru_cache(maxsize=1)
 def _get_service():
@@ -36,8 +38,14 @@ def _get_or_create_folder(svc, folder_name: str, parent_id: str) -> str:
         f"and trashed=false"
     )
     resp = svc.files().list(
-        q=query, spaces="drive", fields="files(id, name)", pageSize=1,
-        supportsAllDrives=True, includeItemsFromAllDrives=True,
+        q=query,
+        spaces="drive",
+        fields="files(id, name)",
+        pageSize=1,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+        corpora="drive",
+        driveId=SHARED_DRIVE_ID,
     ).execute()
     files = resp.get("files", [])
     if files:
@@ -59,8 +67,14 @@ def _pdf_exists_in_folder(svc, filename: str, folder_id: str) -> bool:
     safe_name = filename.replace("'", "\\'")
     query = f"name='{safe_name}' and '{folder_id}' in parents and trashed=false"
     resp = svc.files().list(
-        q=query, spaces="drive", fields="files(id)", pageSize=1,
-        supportsAllDrives=True, includeItemsFromAllDrives=True,
+        q=query,
+        spaces="drive",
+        fields="files(id)",
+        pageSize=1,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+        corpora="drive",
+        driveId=SHARED_DRIVE_ID,
     ).execute()
     return len(resp.get("files", [])) > 0
 
@@ -69,8 +83,14 @@ def _get_file_id_in_folder(svc, filename: str, folder_id: str) -> Optional[str]:
     safe_name = filename.replace("'", "\\'")
     query = f"name='{safe_name}' and '{folder_id}' in parents and trashed=false"
     resp = svc.files().list(
-        q=query, spaces="drive", fields="files(id)", pageSize=1,
-        supportsAllDrives=True, includeItemsFromAllDrives=True,
+        q=query,
+        spaces="drive",
+        fields="files(id)",
+        pageSize=1,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+        corpora="drive",
+        driveId=SHARED_DRIVE_ID,
     ).execute()
     files = resp.get("files", [])
     return files[0]["id"] if files else None
@@ -109,11 +129,14 @@ def list_files_in_folder(svc, folder_id: str, page_size: int = 200) -> list[dict
             f"and trashed=false"
         )
         kwargs = dict(
-            q=query, spaces="drive",
+            q=query,
+            spaces="drive",
             fields="nextPageToken, files(id, name, mimeType, modifiedTime, size)",
             pageSize=page_size,
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
+            corpora="drive",
+            driveId=SHARED_DRIVE_ID,
         )
         if page_token:
             kwargs["pageToken"] = page_token
