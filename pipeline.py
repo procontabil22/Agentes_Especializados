@@ -239,10 +239,9 @@ def _embeddings():
     )
 
 
-@lru_cache(maxsize=1)
-def _llm():
-    """LLM para extração de metadados JSON — temperatura 0."""
-    if settings.ANTHROPIC_API_KEY:
+def _make_llm(provider: str):
+    """Instancia um LLM pelo nome do provider."""
+    if provider == "anthropic" and settings.ANTHROPIC_API_KEY:
         from langchain_anthropic import ChatAnthropic
         return ChatAnthropic(
             model="claude-haiku-4-5-20251001",
@@ -250,7 +249,7 @@ def _llm():
             max_tokens=600,
             temperature=0,
         )
-    if settings.OPENAI_API_KEY:
+    if provider == "openai" and settings.OPENAI_API_KEY:
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
             model="gpt-4o-mini",
@@ -258,14 +257,34 @@ def _llm():
             max_tokens=600,
             temperature=0,
         )
-    if settings.GEMINI_API_KEY:
+    if provider == "gemini" and settings.GEMINI_API_KEY:
         from langchain_google_genai import ChatGoogleGenerativeAI
         return ChatGoogleGenerativeAI(
             model="gemini-1.5-flash",
             google_api_key=settings.GEMINI_API_KEY,
             max_output_tokens=600,
         )
-    raise RuntimeError("Nenhuma chave de LLM configurada.")
+    return None
+
+
+def _get_llm_with_fallback():
+    """
+    Retorna o primeiro LLM disponível e com créditos.
+    Testa cada provider em ordem e faz fallback automático se falhar.
+    Ordem: Anthropic → OpenAI → Gemini
+    """
+    providers = []
+    if settings.ANTHROPIC_API_KEY:
+        providers.append("anthropic")
+    if settings.OPENAI_API_KEY:
+        providers.append("openai")
+    if settings.GEMINI_API_KEY:
+        providers.append("gemini")
+
+    if not providers:
+        raise RuntimeError("Nenhuma chave de LLM configurada.")
+
+    return providers  # retorna lista ordenada para tentar em sequência
 
 
 @lru_cache(maxsize=1)
@@ -301,23 +320,52 @@ def _detect_doc_type(folder_name: str, filename: str, sample: str) -> DocType:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _extract_json(content: str, doc_type: DocType) -> dict:
+    """
+    Extrai JSON via LLM com fallback automático entre providers.
+    Se Anthropic falhar (sem créditos, erro 400/429), tenta OpenAI.
+    Se OpenAI falhar, tenta Gemini.
+    """
     from langchain_core.messages import HumanMessage, SystemMessage
     system  = _SYSTEM_PROMPTS.get(doc_type, _SYSTEM_PROMPTS[DocType.GENERICO])
     snippet = content[:3000]
-    try:
-        resp = _llm().invoke([
-            SystemMessage(content=system),
-            HumanMessage(content=f"TRECHO DO DOCUMENTO:\n\n{snippet}"),
-        ])
-        raw   = resp.content.strip()
-        fence = _RE_JSON_FENCE.search(raw)
-        if fence:
-            raw = fence.group(1)
-        return json.loads(raw)
-    except json.JSONDecodeError as e:
-        return {"assunto": content[:80], "_parse_error": str(e)}
-    except Exception as e:
-        return {"assunto": content[:80], "_llm_error": str(e)}
+    msgs    = [
+        SystemMessage(content=system),
+        HumanMessage(content=f"TRECHO DO DOCUMENTO:\n\n{snippet}"),
+    ]
+
+    providers = _get_llm_with_fallback()
+    last_error = None
+
+    for provider in providers:
+        llm = _make_llm(provider)
+        if not llm:
+            continue
+        try:
+            resp  = llm.invoke(msgs)
+            raw   = resp.content.strip()
+            fence = _RE_JSON_FENCE.search(raw)
+            if fence:
+                raw = fence.group(1)
+            result = json.loads(raw)
+            if provider != providers[0]:
+                logger.debug(f"    ↳ Fallback para {provider} funcionou")
+            return result
+        except json.JSONDecodeError as e:
+            return {"assunto": content[:80], "_parse_error": str(e)}
+        except Exception as e:
+            err_str = str(e)
+            # Erros de crédito/autenticação → tenta próximo provider
+            if any(k in err_str.lower() for k in [
+                "credit", "balance", "quota", "rate_limit",
+                "insufficient", "billing", "payment", "403", "429"
+            ]):
+                logger.debug(f"    ↳ {provider} sem créditos/quota — tentando próximo")
+                last_error = err_str
+                continue
+            # Outros erros → retorna imediatamente
+            return {"assunto": content[:80], "_llm_error": err_str}
+
+    return {"assunto": content[:80], "_llm_error": f"Todos os providers falharam: {last_error}"}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
