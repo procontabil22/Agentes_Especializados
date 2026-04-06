@@ -42,6 +42,7 @@ class CrawlSource:
     same_domain_only: bool = True
     use_browser: bool = False
     headers: dict = field(default_factory=dict)
+    url_follow_pattern: str = ""  # se definido, só segue sub-links que combinam com este padrão
 
 
 # =============================================================================
@@ -155,36 +156,45 @@ CRAWL_SOURCES: list[CrawlSource] = [
     ),
 
     # =========================================================================
-    # 2. ANALISTA CONTÁBIL — CPC e CFC (índices HTML com links para PDF)
+    # 2. ANALISTA CONTÁBIL — CPC e CFC
     # =========================================================================
 
+    # CPC — Pronunciamentos Técnicos (CPC 00 ao CPC 48)
+    # url_follow_pattern garante que só seguimos páginas de pronunciamento
+    # e não seções de contribuições ao IASB, relatórios de atividades, etc.
     CrawlSource(
         url="https://www.cpc.org.br/CPC/Documentos-Emitidos/Pronunciamentos",
         folder_name="analista_contabil",
-        description="CPC — Pronunciamentos Contábeis (CPC 00 ao CPC 48)",
+        description="CPC — Pronunciamentos Técnicos (CPC 00 ao CPC 48)",
         use_browser=False,
-        pdf_pattern=r"\.pdf",
-        max_depth=1,
+        pdf_pattern=r"static\.cpc\.aatb\.com\.br|static\.cpc\.org\.br|amazonaws\.com.*cpc",
+        max_depth=2,
         same_domain_only=False,
+        url_follow_pattern=r"Pronunciamento\?Id=\d+",
     ),
+    # CPC — Interpretações Técnicas (ICPC)
     CrawlSource(
         url="https://www.cpc.org.br/CPC/Documentos-Emitidos/Interpretacoes",
         folder_name="analista_contabil",
-        description="CPC — Interpretações Técnicas (ICPC)",
+        description="CPC — Interpretações Técnicas (ICPC 01 ao ICPC 22)",
         use_browser=False,
-        pdf_pattern=r"\.pdf",
-        max_depth=1,
+        pdf_pattern=r"static\.cpc\.aatb\.com\.br|amazonaws\.com.*cpc",
+        max_depth=2,
         same_domain_only=False,
+        url_follow_pattern=r"Interpretacao\?Id=\d+",
     ),
+    # CPC — Orientações Técnicas (OCPC)
     CrawlSource(
         url="https://www.cpc.org.br/CPC/Documentos-Emitidos/Orientacoes",
         folder_name="analista_contabil",
-        description="CPC — Orientações Técnicas (OCPC)",
+        description="CPC — Orientações Técnicas (OCPC 01 ao OCPC 10)",
         use_browser=False,
-        pdf_pattern=r"\.pdf",
-        max_depth=1,
+        pdf_pattern=r"static\.cpc\.aatb\.com\.br|amazonaws\.com.*cpc",
+        max_depth=2,
         same_domain_only=False,
+        url_follow_pattern=r"Orientacao\?Id=\d+",
     ),
+    # CFC — NBC TG Gerais
     CrawlSource(
         url="https://cfc.org.br/tecnica/normas-brasileiras-de-contabilidade/nbc-tg-geral/",
         folder_name="analista_contabil",
@@ -194,6 +204,7 @@ CRAWL_SOURCES: list[CrawlSource] = [
         max_depth=1,
         same_domain_only=False,
     ),
+    # CFC — NBC TA (Auditoria Independente)
     CrawlSource(
         url="https://cfc.org.br/tecnica/normas-brasileiras-de-contabilidade/nbc-ta-auditoria-independente/",
         folder_name="analista_contabil",
@@ -426,7 +437,7 @@ def _extract_pdf_links(html: str, base_url: str, source: CrawlSource) -> list[di
             found.append({"url": full, "title": text[:100]})
     return found
 
-def _extract_sub_links(html: str, base_url: str) -> list[str]:
+def _extract_sub_links(html: str, base_url: str, source: "CrawlSource" = None) -> list[str]:
     links, seen = [], set()
     base_domain = urlparse(base_url).netloc
     for m in re.finditer(r'href=["\']([^"\'#]+)["\']', html, re.IGNORECASE):
@@ -434,9 +445,13 @@ def _extract_sub_links(html: str, base_url: str) -> list[str]:
         if urlparse(full).netloc != base_domain: continue
         if full in seen or full == base_url: continue
         if re.search(r"\.(pdf|doc|docx|xls|zip)$", full, re.IGNORECASE): continue
+        # Aplica filtro de URL se definido
+        if source and source.url_follow_pattern:
+            if not re.search(source.url_follow_pattern, full, re.IGNORECASE):
+                continue
         seen.add(full)
         links.append(full)
-    return links[:50]  # aumentado de 20 para 50 (portais JSF têm muitos sublinks)
+    return links[:50]
 
 
 # =============================================================================
@@ -486,7 +501,7 @@ async def crawl_and_upload(source: CrawlSource) -> list[dict]:
         if new:
             logger.info(f"  🔗 {len(new)} PDFs em {url}")
         if depth < source.max_depth:
-            for sub in _extract_sub_links(html, url):
+            for sub in _extract_sub_links(html, url, source):
                 await crawl_page(sub, depth + 1)
                 await asyncio.sleep(0.5)
 
