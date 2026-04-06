@@ -32,7 +32,7 @@ async def _run_indexing_job(folder: str | None = None):
     _index_status["last_run"] = datetime.utcnow().isoformat()
     try:
         from orchestrator import run_indexing  # ← flat import
-        report = run_indexing(folder_filter=folder)
+        report = await run_indexing(folder_filter=folder)
         _index_status["last_report"] = report
     finally:
         _index_status["running"] = False

@@ -53,39 +53,105 @@ CRAWL_SOURCES: list[CrawlSource] = [
 
     # =========================================================================
     # 1. ANALISTA FISCAL — SEFAZ-MA (portal JSF — exige Playwright)
+    #
+    # Estratégia: iniciar nas páginas-raiz reais (códigos confirmados via
+    # Google) e deixar o Playwright descobrir todos os PDFs automaticamente.
+    # Padrões de PDF confirmados:
+    #   /portalsefaz/pdf?codigo=XXXX   → documentos PDF
+    #   /portalsefaz/files?codigo=XXXX → arquivos (PDF/DOC)
     # =========================================================================
 
+    # Página principal de Legislação (contém links para RICMS, Lei 7.799, etc.)
     CrawlSource(
         url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=95",
         folder_name="analista_fiscal",
-        description="SEFAZ-MA — RICMS-MA (Decreto 19.714/2003 + atualizações)",
+        description="SEFAZ-MA — Legislação Tributária (raiz: RICMS, Lei 7.799, Convênios, Portarias…)",
         use_browser=True,
-        direct_pdf_pattern=r"/portalsefaz/pdf\?codigo=\d+",
-        max_depth=2,
+        direct_pdf_pattern=r"/portalsefaz/(?:pdf|files)\?codigo=\d+",
+        max_depth=3,
     ),
+    # Anexos do RICMS-MA (código confirmado via Google)
+    # Contém: Anexo 1 (isenções), Anexo 4 (ICMS-ST), Anexo 5 (diferimento),
+    # redução de BC, gado bovino, combustíveis, etc.
     CrawlSource(
         url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=98",
         folder_name="analista_fiscal",
-        description="SEFAZ-MA — Anexos do RICMS-MA",
+        description="SEFAZ-MA — Anexos do RICMS-MA (isenção, ST, diferimento, redução, gado bovino)",
         use_browser=True,
-        direct_pdf_pattern=r"/portalsefaz/pdf\?codigo=\d+",
+        direct_pdf_pattern=r"/portalsefaz/(?:pdf|files)\?codigo=\d+",
+        max_depth=3,
+    ),
+    # Benefícios Fiscais e Desonerações — ICMS/IPVA (código confirmado via Google)
+    CrawlSource(
+        url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=3556",
+        folder_name="analista_fiscal",
+        description="SEFAZ-MA — Benefícios Fiscais ICMS-MA (isenção, redução, diferimento, ICMS-ST)",
+        use_browser=True,
+        direct_pdf_pattern=r"/portalsefaz/(?:pdf|files)\?codigo=\d+",
+        max_depth=3,
+    ),
+    # Benefícios Fiscais Concedidos pelo Estado (código confirmado via Google)
+    CrawlSource(
+        url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=1548",
+        folder_name="analista_fiscal",
+        description="SEFAZ-MA — Benefícios Fiscais Concedidos pelo Maranhão (relatórios, programas)",
+        use_browser=True,
+        direct_pdf_pattern=r"/portalsefaz/(?:pdf|files)\?codigo=\d+",
         max_depth=2,
     ),
+    # Portarias SEFAZ-MA (código confirmado via Google)
     CrawlSource(
-        url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=97",
+        url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=104",
         folder_name="analista_fiscal",
-        description="SEFAZ-MA — Legislação tributária estadual MA",
+        description="SEFAZ-MA — Portarias GABIN/GARE",
         use_browser=True,
-        direct_pdf_pattern=r"/portalsefaz/pdf\?codigo=\d+",
+        direct_pdf_pattern=r"/portalsefaz/(?:pdf|files)\?codigo=\d+",
         max_depth=2,
     ),
+
+    # ── CONFAZ ────────────────────────────────────────────────────────────────
+    # Convênios ICMS — índice completo (Conv. 142/2018, 52/2017, 93/2015…)
     CrawlSource(
-        url="https://sistemas1.sefaz.ma.gov.br/portalsefaz/jsp/pagina/pagina.jsf?codigo=100",
+        url="https://www.confaz.fazenda.gov.br/legislacao/convenios",
         folder_name="analista_fiscal",
-        description="SEFAZ-MA — Instruções Normativas e Portarias GABIN",
-        use_browser=True,
-        direct_pdf_pattern=r"/portalsefaz/pdf\?codigo=\d+",
+        description="CONFAZ — Convênios ICMS (Conv. 142/2018, 52/2017, 93/2015, 100/1997…)",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        direct_pdf_pattern=r"convenios/\d{4}/CV\d+",
         max_depth=2,
+        same_domain_only=True,
+    ),
+    # Protocolos ICMS — ST interestadual, gado bovino, aves, suínos
+    CrawlSource(
+        url="https://www.confaz.fazenda.gov.br/legislacao/protocolos",
+        folder_name="analista_fiscal",
+        description="CONFAZ — Protocolos ICMS (ST gado bovino, aves, suínos, combustíveis)",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        direct_pdf_pattern=r"protocolos/\d{4}/PT\d+",
+        max_depth=2,
+        same_domain_only=True,
+    ),
+    # Ajustes SINIEF — NF-e, MDF-e, CT-e, EFD
+    CrawlSource(
+        url="https://www.confaz.fazenda.gov.br/legislacao/ajustes",
+        folder_name="analista_fiscal",
+        description="CONFAZ — Ajustes SINIEF (NF-e, MDF-e, CT-e, EFD ICMS/IPI)",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        direct_pdf_pattern=r"ajustes/\d{4}/AJ\d+",
+        max_depth=2,
+        same_domain_only=True,
+    ),
+    # Atos COTEPE — tabelas de MVA, pauta fiscal, ST específica
+    CrawlSource(
+        url="https://www.confaz.fazenda.gov.br/legislacao/atos-cotepe",
+        folder_name="analista_fiscal",
+        description="CONFAZ — Atos COTEPE/ICMS (MVA, pauta fiscal, obrigações acessórias)",
+        use_browser=False,
+        pdf_pattern=r"\.pdf",
+        max_depth=2,
+        same_domain_only=True,
     ),
 
     # =========================================================================
@@ -370,7 +436,7 @@ def _extract_sub_links(html: str, base_url: str) -> list[str]:
         if re.search(r"\.(pdf|doc|docx|xls|zip)$", full, re.IGNORECASE): continue
         seen.add(full)
         links.append(full)
-    return links[:20]
+    return links[:50]  # aumentado de 20 para 50 (portais JSF têm muitos sublinks)
 
 
 # =============================================================================

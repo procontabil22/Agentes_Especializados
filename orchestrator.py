@@ -47,7 +47,7 @@ def _is_processable(file: dict) -> bool:
 
 # ── Ponto de entrada principal ────────────────────────────────────────────────
 
-def run_indexing(folder_filter: Optional[str] = None) -> dict:
+async def run_indexing(folder_filter: Optional[str] = None) -> dict:
     """
     Percorre as pastas do Google Drive, baixa os PDFs e os indexa no Supabase
     via pipeline.process_pdf().
@@ -101,9 +101,8 @@ def run_indexing(folder_filter: Optional[str] = None) -> dict:
     # ── Passo 2: Crawler (SEFAZ-MA, DREI, CPC, eSocial etc.) ─────────────────
     logger.info("🌐 Iniciando crawler de portais dinâmicos...")
     try:
-        import asyncio
         from crawler import run_crawler
-        crawl_results = asyncio.run(run_crawler(source_filter=folder_filter))
+        crawl_results = await run_crawler(source_filter=folder_filter)
         cr_uploaded = sum(1 for r in crawl_results if r.get("status") == "uploaded")
         cr_skipped  = sum(1 for r in crawl_results if r.get("status") == "skipped")
         cr_errors   = sum(1 for r in crawl_results if r.get("status") == "error")
