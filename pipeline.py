@@ -711,14 +711,23 @@ def _upsert_ncm_records(ncm_records: list[dict]) -> None:
     if not ncm_records:
         return
     try:
+        # Deduplica dentro do mesmo batch pela chave única (ncm_norm, file_hash, beneficio)
+        seen: set[tuple] = set()
+        dedup: list[dict] = []
+        for r in ncm_records:
+            key = (r.get("ncm_norm",""), r.get("file_hash",""), r.get("beneficio",""))
+            if key not in seen:
+                seen.add(key)
+                dedup.append(r)
+
         from supabase import create_client
         sb = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
-        for i in range(0, len(ncm_records), 100):
+        for i in range(0, len(dedup), 100):
             sb.table("kb_ncm_fiscal").upsert(
-                ncm_records[i: i + 100],
+                dedup[i: i + 100],
                 on_conflict="ncm_norm,file_hash,beneficio",
             ).execute()
-        logger.info(f"  ✅ {len(ncm_records)} NCMs gravados em kb_ncm_fiscal")
+        logger.info(f"  ✅ {len(dedup)} NCMs únicos gravados em kb_ncm_fiscal ({len(ncm_records)-len(dedup)} duplicatas removidas)")
     except Exception as e:
         logger.error(f"  ✗ Erro ao gravar NCMs: {e}")
 
