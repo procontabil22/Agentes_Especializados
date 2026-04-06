@@ -239,9 +239,10 @@ def _embeddings():
     )
 
 
-def _make_llm(provider: str):
-    """Instancia um LLM pelo nome do provider."""
-    if provider == "anthropic" and settings.ANTHROPIC_API_KEY:
+@lru_cache(maxsize=1)
+def _llm():
+    """LLM para extração de metadados JSON — temperatura 0."""
+    if settings.ANTHROPIC_API_KEY:
         from langchain_anthropic import ChatAnthropic
         return ChatAnthropic(
             model="claude-haiku-4-5-20251001",
@@ -249,7 +250,7 @@ def _make_llm(provider: str):
             max_tokens=600,
             temperature=0,
         )
-    if provider == "openai" and settings.OPENAI_API_KEY:
+    if settings.OPENAI_API_KEY:
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
             model="gpt-4o-mini",
@@ -257,34 +258,14 @@ def _make_llm(provider: str):
             max_tokens=600,
             temperature=0,
         )
-    if provider == "gemini" and settings.GEMINI_API_KEY:
+    if settings.GEMINI_API_KEY:
         from langchain_google_genai import ChatGoogleGenerativeAI
         return ChatGoogleGenerativeAI(
             model="gemini-1.5-flash",
             google_api_key=settings.GEMINI_API_KEY,
             max_output_tokens=600,
         )
-    return None
-
-
-def _get_llm_with_fallback():
-    """
-    Retorna o primeiro LLM disponível e com créditos.
-    Testa cada provider em ordem e faz fallback automático se falhar.
-    Ordem: Anthropic → OpenAI → Gemini
-    """
-    providers = []
-    if settings.ANTHROPIC_API_KEY:
-        providers.append("anthropic")
-    if settings.OPENAI_API_KEY:
-        providers.append("openai")
-    if settings.GEMINI_API_KEY:
-        providers.append("gemini")
-
-    if not providers:
-        raise RuntimeError("Nenhuma chave de LLM configurada.")
-
-    return providers  # retorna lista ordenada para tentar em sequência
+    raise RuntimeError("Nenhuma chave de LLM configurada.")
 
 
 @lru_cache(maxsize=1)
@@ -320,52 +301,23 @@ def _detect_doc_type(folder_name: str, filename: str, sample: str) -> DocType:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _extract_json(content: str, doc_type: DocType) -> dict:
-    """
-    Extrai JSON via LLM com fallback automático entre providers.
-    Se Anthropic falhar (sem créditos, erro 400/429), tenta OpenAI.
-    Se OpenAI falhar, tenta Gemini.
-    """
     from langchain_core.messages import HumanMessage, SystemMessage
     system  = _SYSTEM_PROMPTS.get(doc_type, _SYSTEM_PROMPTS[DocType.GENERICO])
     snippet = content[:3000]
-    msgs    = [
-        SystemMessage(content=system),
-        HumanMessage(content=f"TRECHO DO DOCUMENTO:\n\n{snippet}"),
-    ]
-
-    providers = _get_llm_with_fallback()
-    last_error = None
-
-    for provider in providers:
-        llm = _make_llm(provider)
-        if not llm:
-            continue
-        try:
-            resp  = llm.invoke(msgs)
-            raw   = resp.content.strip()
-            fence = _RE_JSON_FENCE.search(raw)
-            if fence:
-                raw = fence.group(1)
-            result = json.loads(raw)
-            if provider != providers[0]:
-                logger.debug(f"    ↳ Fallback para {provider} funcionou")
-            return result
-        except json.JSONDecodeError as e:
-            return {"assunto": content[:80], "_parse_error": str(e)}
-        except Exception as e:
-            err_str = str(e)
-            # Erros de crédito/autenticação → tenta próximo provider
-            if any(k in err_str.lower() for k in [
-                "credit", "balance", "quota", "rate_limit",
-                "insufficient", "billing", "payment", "403", "429"
-            ]):
-                logger.debug(f"    ↳ {provider} sem créditos/quota — tentando próximo")
-                last_error = err_str
-                continue
-            # Outros erros → retorna imediatamente
-            return {"assunto": content[:80], "_llm_error": err_str}
-
-    return {"assunto": content[:80], "_llm_error": f"Todos os providers falharam: {last_error}"}
+    try:
+        resp = _llm().invoke([
+            SystemMessage(content=system),
+            HumanMessage(content=f"TRECHO DO DOCUMENTO:\n\n{snippet}"),
+        ])
+        raw   = resp.content.strip()
+        fence = _RE_JSON_FENCE.search(raw)
+        if fence:
+            raw = fence.group(1)
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        return {"assunto": content[:80], "_parse_error": str(e)}
+    except Exception as e:
+        return {"assunto": content[:80], "_llm_error": str(e)}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -525,8 +477,191 @@ def _split_by_sections(markdown: str, source_meta: dict) -> tuple[list[dict], li
 # TABELAS DOCLING
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _extract_tables(docling_result: Any, source_meta: dict) -> list[dict]:
+# ── Padrões de detecção de NCM ───────────────────────────────────────────────
+_RE_NCM = re.compile(
+    r"\b(\d{4})\s*[.\-]?\s*(\d{2})\s*[.\-]?\s*(\d{2})\s*[.\-]?\s*(\d{2})\b"  # NCM 8 dígitos
+    r"|\b(\d{4})\s*[.\-]?\s*(\d{2})\s*[.\-]?\s*(\d{2})\b"                      # NCM 7 dígitos
+    r"|\b(\d{4})\s*[.\-]?\s*(\d{2})\b"                                          # Posição 6 dígitos
+    r"|\b(\d{4})\b"                                                              # Capítulo/posição 4
+)
+_RE_NCM_BENEFICIO = re.compile(
+    r"(isen[çc][aã]o|redu[çc][aã]o|diferimento|suspens[aã]o|"
+    r"substitui[çc][aã]o\s+tribut[aá]ria|ST|cr[eé]dito\s+outorgado|"
+    r"imunidade|n[aã]o\s+incid[eê]ncia)",
+    re.IGNORECASE
+)
+_RE_PERCENTUAL = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*%|MVA\s+(\d+(?:[.,]\d+)?)\s*%|"
+    r"redu[çc][aã]o\s+de\s+(\d+(?:[.,]\d+)?)\s*%",
+    re.IGNORECASE
+)
+
+
+def _normalize_ncm(ncm_raw: str) -> str:
+    """Remove pontos, traços e espaços do NCM → '10019190'"""
+    return re.sub(r"[.\-\s]", "", ncm_raw)
+
+
+def _format_ncm(ncm_norm: str) -> str:
+    """Formata NCM normalizado → '1001.91.90'"""
+    n = ncm_norm.zfill(8)
+    if len(n) == 8:
+        return f"{n[:4]}.{n[4:6]}.{n[6:8]}"
+    if len(n) == 7:
+        return f"{n[:4]}.{n[4:6]}.{n[6:]}"
+    return ncm_norm
+
+
+def _extract_ncms_from_table(table_md: str, source_meta: dict, parent_id: str) -> list[dict]:
+    """
+    Extrai registros NCM de uma tabela Markdown do Docling.
+    Cada linha da tabela com NCM vira um registro na kb_ncm_fiscal.
+    """
+    ncm_records: list[dict] = []
+    lines = table_md.split("\n")
+
+    # Detecta colunas pelo cabeçalho
+    header_line = ""
+    col_indices = {"ncm": -1, "descricao": -1, "beneficio": -1,
+                   "percentual": -1, "condicao": -1, "dispositivo": -1}
+
+    for line in lines:
+        if "|" not in line:
+            continue
+        cols = [c.strip().lower() for c in line.split("|") if c.strip()]
+        if not cols:
+            continue
+
+        # Detecta linha de cabeçalho
+        if any(k in " ".join(cols) for k in ["ncm", "código", "produto", "mercadoria"]):
+            header_line = line
+            for i, col in enumerate(cols):
+                if any(k in col for k in ["ncm", "código", "cod"]):
+                    col_indices["ncm"] = i
+                elif any(k in col for k in ["descri", "produto", "mercadoria", "item"]):
+                    col_indices["descricao"] = i
+                elif any(k in col for k in ["benefício", "beneficio", "tratamento", "situação"]):
+                    col_indices["beneficio"] = i
+                elif any(k in col for k in ["%", "alíquota", "aliquota", "percentual", "mva"]):
+                    col_indices["percentual"] = i
+                elif any(k in col for k in ["condição", "condicao", "requisito"]):
+                    col_indices["condicao"] = i
+                elif any(k in col for k in ["dispositiv", "base legal", "fundamento", "art"]):
+                    col_indices["dispositivo"] = i
+            continue
+
+        # Pula linha separadora
+        if re.match(r"^\s*[\|:\-\s]+$", line):
+            continue
+
+        # Processa linha de dados
+        raw_cols = [c.strip() for c in line.split("|") if c.strip()]
+        if not raw_cols:
+            continue
+
+        # Extrai NCM da linha (da coluna específica ou de qualquer campo)
+        ncm_raw = ""
+        if col_indices["ncm"] >= 0 and col_indices["ncm"] < len(raw_cols):
+            ncm_raw = raw_cols[col_indices["ncm"]]
+        else:
+            # Tenta encontrar NCM em qualquer coluna
+            for col in raw_cols:
+                m = _RE_NCM.search(col)
+                if m:
+                    ncm_raw = m.group(0)
+                    break
+
+        if not ncm_raw:
+            continue
+
+        # Valida que é um NCM (pelo menos 4 dígitos numéricos)
+        ncm_digits = re.sub(r"[^\d]", "", ncm_raw)
+        if len(ncm_digits) < 4:
+            continue
+
+        # Formata NCM
+        ncm_norm = _normalize_ncm(ncm_raw)
+        ncm_fmt  = _format_ncm(ncm_norm)
+
+        # Extrai campos das colunas ou do texto completo da linha
+        full_line = " ".join(raw_cols)
+
+        descricao = ""
+        if col_indices["descricao"] >= 0 and col_indices["descricao"] < len(raw_cols):
+            descricao = raw_cols[col_indices["descricao"]]
+
+        beneficio_raw = ""
+        if col_indices["beneficio"] >= 0 and col_indices["beneficio"] < len(raw_cols):
+            beneficio_raw = raw_cols[col_indices["beneficio"]]
+        else:
+            m = _RE_NCM_BENEFICIO.search(full_line)
+            beneficio_raw = m.group(0) if m else ""
+
+        # Normaliza tipo de benefício
+        b_lower = beneficio_raw.lower()
+        if "isen" in b_lower:
+            beneficio = "isencao"
+        elif "redu" in b_lower:
+            beneficio = "reducao"
+        elif "difer" in b_lower:
+            beneficio = "diferimento"
+        elif "suspen" in b_lower:
+            beneficio = "suspensao"
+        elif "st" in b_lower or "substitui" in b_lower:
+            beneficio = "st"
+        elif "crédito" in b_lower or "credito" in b_lower:
+            beneficio = "credito_outorgado"
+        elif "não incide" in b_lower or "nao incide" in b_lower:
+            beneficio = "nao_incidencia"
+        else:
+            beneficio = beneficio_raw or "tributado"
+
+        percentual = ""
+        if col_indices["percentual"] >= 0 and col_indices["percentual"] < len(raw_cols):
+            percentual = raw_cols[col_indices["percentual"]]
+        else:
+            m = _RE_PERCENTUAL.search(full_line)
+            percentual = m.group(0) if m else ""
+
+        condicao = ""
+        if col_indices["condicao"] >= 0 and col_indices["condicao"] < len(raw_cols):
+            condicao = raw_cols[col_indices["condicao"]]
+
+        dispositivo = ""
+        if col_indices["dispositivo"] >= 0 and col_indices["dispositivo"] < len(raw_cols):
+            dispositivo = raw_cols[col_indices["dispositivo"]]
+
+        ncm_records.append({
+            "ncm":         ncm_fmt,
+            "ncm_norm":    ncm_norm[:8],  # máximo 8 dígitos
+            "descricao":   descricao[:500] if descricao else "",
+            "beneficio":   beneficio,
+            "percentual":  percentual[:50] if percentual else "",
+            "base_calculo": "",
+            "condicao":    condicao[:500] if condicao else "",
+            "dispositivo": dispositivo[:200] if dispositivo else "",
+            "tipo_norma":  source_meta.get("doc_type", ""),
+            "uf":          source_meta.get("uf_aplicacao", "MA"),
+            "file_name":   source_meta.get("file_name", ""),
+            "file_hash":   source_meta.get("file_hash", ""),
+            "parent_id":   parent_id,
+            "folder_name": source_meta.get("folder_name", ""),
+        })
+
+    return ncm_records
+
+
+def _extract_tables(docling_result: Any, source_meta: dict) -> tuple[list[dict], list[dict]]:
+    """
+    Extrai tabelas do Docling.
+    Retorna: (table_chunks para kb_agente, ncm_records para kb_ncm_fiscal)
+
+    table_chunks = parents especiais com conteúdo da tabela
+    ncm_records  = registros individuais por NCM extraídos das tabelas
+    """
     table_chunks: list[dict] = []
+    ncm_records:  list[dict] = []
+
     try:
         for i, table in enumerate(docling_result.document.tables or []):
             try:
@@ -534,25 +669,58 @@ def _extract_tables(docling_result: Any, source_meta: dict) -> list[dict]:
                        if hasattr(table, "export_to_markdown") else str(table))
                 if not tmd.strip() or len(tmd) < 20:
                     continue
+
                 pid = str(uuid.uuid4())
                 idx = 90000 + i
                 base = {**source_meta, "unit_type": "tabela",
                         "table_index": i, "is_table": True,
                         "h1": source_meta.get("file_name", ""),
                         "h2": f"Tabela {i + 1}"}
+
                 table_chunks.append({
-                    "content": f"[TABELA {i + 1}]\n{tmd}",
-                    "parent_id": pid,
-                    "chunk_level": "parent", "chunk_index": idx,
-                    "h1": base["h1"], "h2": base["h2"],
-                    "metadata": {**base, "chunk_index": idx,
-                                 "chunk_level": "parent", "parent_id": pid},
+                    "content":     f"[TABELA {i + 1}]\n{tmd}",
+                    "parent_id":   pid,
+                    "chunk_level": "parent",
+                    "chunk_index": idx,
+                    "h1":          base["h1"],
+                    "h2":          base["h2"],
+                    "metadata":    {**base, "chunk_index": idx,
+                                    "chunk_level": "parent", "parent_id": pid},
                 })
+
+                # Tenta extrair NCMs desta tabela
+                extracted = _extract_ncms_from_table(tmd, source_meta, pid)
+                if extracted:
+                    ncm_records.extend(extracted)
+                    logger.debug(f"  📦 Tabela {i+1}: {len(extracted)} NCMs extraídos")
+
             except Exception as e:
                 logger.debug(f"  ⚠ Tabela {i}: {e}")
+
     except Exception as e:
         logger.debug(f"  ⚠ Extração tabelas: {e}")
-    return table_chunks
+
+    if ncm_records:
+        logger.info(f"  📦 Total NCMs extraídos das tabelas: {len(ncm_records)}")
+
+    return table_chunks, ncm_records
+
+
+def _upsert_ncm_records(ncm_records: list[dict]) -> None:
+    """Salva registros NCM na tabela kb_ncm_fiscal com deduplicação."""
+    if not ncm_records:
+        return
+    try:
+        from supabase import create_client
+        sb = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_KEY)
+        for i in range(0, len(ncm_records), 100):
+            sb.table("kb_ncm_fiscal").upsert(
+                ncm_records[i: i + 100],
+                on_conflict="ncm_norm,file_hash,beneficio",
+            ).execute()
+        logger.info(f"  ✅ {len(ncm_records)} NCMs gravados em kb_ncm_fiscal")
+    except Exception as e:
+        logger.error(f"  ✗ Erro ao gravar NCMs: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -684,10 +852,14 @@ def process_pdf(
     parents, children = _select_strategy(doc_type, markdown, source_meta)
 
     # ── Tabelas Docling ───────────────────────────────────────────────────────
-    table_chunks = _extract_tables(result, source_meta)
+    table_chunks, ncm_records = _extract_tables(result, source_meta)
     if table_chunks:
         parents.extend(table_chunks)
-        logger.info(f"  📊 {len(table_chunks)} tabela(s) extraída(s)")
+        logger.info(f"  📊 {len(table_chunks)} tabela(s) | {len(ncm_records)} NCM(s) extraídos")
+
+    # Salva NCMs na tabela dedicada
+    if ncm_records:
+        _upsert_ncm_records(ncm_records)
 
     logger.info(f"  → {len(parents)} parents | {len(children)} children")
 

@@ -14,11 +14,20 @@ Retrocompatibilidade:
 """
 
 from functools import lru_cache
+import re
 
 from loguru import logger
 
 from agents import AgentConfig, get_agent  # ← flat import
 from settings import settings              # ← flat import
+
+# Padrão para detectar NCM na pergunta do usuário
+_RE_NCM_QUERY = re.compile(
+    r"\b(\d{4}[.\-]?\d{2}[.\-]?\d{2}[.\-]?\d{2})"   # NCM 10 dígitos com pontuação
+    r"|\b(\d{4}[.\-]?\d{2}[.\-]?\d{2})"              # NCM 8 dígitos
+    r"|\b(\d{4}[.\-]?\d{2})"                          # Posição 6 dígitos
+    r"|\b(\d{4})\b"                                   # Capítulo 4 dígitos
+)
 
 
 # ── Clientes lazy ─────────────────────────────────────────────────────────────
@@ -125,6 +134,78 @@ def _get_llm_name() -> str:
     if settings.DEEPSEEK_API_KEY:
         return "DeepSeek"
     return "desconhecido"
+
+
+# ── Busca NCM exata ───────────────────────────────────────────────────────────
+
+def _extract_ncms_from_question(question: str) -> list[str]:
+    """Extrai códigos NCM da pergunta do usuário."""
+    found = []
+    for m in _RE_NCM_QUERY.finditer(question):
+        ncm = next(g for g in m.groups() if g)
+        # Remove pontuação para normalizar
+        ncm_digits = re.sub(r"[.\-\s]", "", ncm)
+        if len(ncm_digits) >= 4:
+            found.append(ncm_digits)
+    return list(dict.fromkeys(found))  # deduplica mantendo ordem
+
+
+def _search_ncm(ncm_codes: list[str], limit: int = 10) -> list[dict]:
+    """
+    Busca registros NCM na tabela kb_ncm_fiscal.
+    Retorna contexto estruturado com tratamento tributário por NCM.
+    """
+    if not ncm_codes:
+        return []
+
+    results = []
+    for ncm in ncm_codes:
+        try:
+            resp = _supabase().rpc("search_ncm", {
+                "p_ncm":   ncm,
+                "p_uf":    "MA",
+                "p_limit": limit,
+            }).execute()
+            if resp.data:
+                results.extend(resp.data)
+                logger.debug(f"  NCM {ncm}: {len(resp.data)} registros encontrados")
+        except Exception as e:
+            logger.debug(f"  ⚠ Busca NCM {ncm}: {e}")
+
+    return results
+
+
+def _ncm_context_block(ncm_results: list[dict]) -> str:
+    """Formata resultados NCM como contexto estruturado para o LLM."""
+    if not ncm_results:
+        return ""
+
+    parts = ["📦 TRATAMENTO TRIBUTÁRIO POR NCM (RICMS-MA e CONFAZ):\n"]
+    seen = set()
+
+    for r in ncm_results:
+        key = f"{r.get('ncm')}_{r.get('beneficio')}"
+        if key in seen:
+            continue
+        seen.add(key)
+
+        linha = f"• NCM {r.get('ncm', '')}"
+        if r.get("descricao"):
+            linha += f" — {r['descricao']}"
+        linha += f"\n  Tratamento: {r.get('beneficio', '').upper()}"
+        if r.get("percentual"):
+            linha += f" | {r['percentual']}"
+        if r.get("base_calculo"):
+            linha += f" | Base: {r['base_calculo']}"
+        if r.get("condicao"):
+            linha += f"\n  Condição: {r['condicao']}"
+        if r.get("dispositivo"):
+            linha += f"\n  Dispositivo: {r['dispositivo']}"
+        if r.get("file_name"):
+            linha += f"\n  Fonte: {r['file_name']}"
+        parts.append(linha)
+
+    return "\n\n".join(parts)
 
 
 # ── Retrieval parent-child ────────────────────────────────────────────────────
@@ -238,19 +319,39 @@ async def ask_agent(
     if not agent:
         return {"answer": f"Agente '{agent_id}' não encontrado.", "sources": [], "agent": agent_id}
 
+    # ── Busca híbrida: NCM exata + semântica ──────────────────────────────────
+    ncm_codes   = _extract_ncms_from_question(question)
+    ncm_results = _search_ncm(ncm_codes) if ncm_codes else []
+
+    if ncm_codes:
+        logger.info(f"  🔍 NCMs detectados na pergunta: {ncm_codes} → {len(ncm_results)} registros")
+
+    # Busca semântica normal
     context_chunks, children = _retrieve(agent, question)
-    context = _context_block(context_chunks)
+
+    # ── Monta contexto combinado ──────────────────────────────────────────────
+    ncm_ctx      = _ncm_context_block(ncm_results)
+    semantic_ctx = _context_block(context_chunks)
+
+    # NCM vai primeiro — é contexto exato e estruturado
+    if ncm_ctx:
+        full_context = f"{ncm_ctx}\n\n{'═'*50}\n\n📄 CONTEXTO DOCUMENTAL:\n\n{semantic_ctx}"
+    else:
+        full_context = semantic_ctx
 
     system = f"""{agent.system_prompt}
 
 ═══════════════════════════════════════
 BASE DE CONHECIMENTO (use como referência principal):
 
-{context}
+{full_context}
 ═══════════════════════════════════════
 
-Responda com base no contexto acima.
-Se o contexto não for suficiente para responder com segurança, informe claramente."""
+INSTRUÇÕES IMPORTANTES:
+- Quando houver dados de NCM específicos, priorize-os na resposta
+- Cite sempre o dispositivo legal (artigo, convênio, protocolo)
+- Se o NCM não estiver na base, informe claramente
+- Responda com base no contexto acima"""
 
     from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
@@ -264,10 +365,22 @@ Se o contexto não for suficiente para responder com segurança, informe clarame
 
     response = await _get_llm().ainvoke(messages)
 
+    # Inclui fontes NCM nas sources
+    ncm_sources = [
+        {
+            "file":    r.get("file_name", ""),
+            "section": f"NCM {r.get('ncm')} — {r.get('beneficio', '')}",
+            "score":   1.0,  # busca exata = score máximo
+        }
+        for r in ncm_results[:5]
+        if r.get("file_name")
+    ]
+
     return {
-        "answer":   response.content,
-        "sources":  _build_sources(children),
-        "agent":    agent.name,
-        "agent_id": agent_id,
-        "llm":      _get_llm_name(),
+        "answer":      response.content,
+        "sources":     ncm_sources + _build_sources(children),
+        "agent":       agent.name,
+        "agent_id":    agent_id,
+        "llm":         _get_llm_name(),
+        "ncm_found":   [r.get("ncm") for r in ncm_results],
     }
