@@ -582,6 +582,85 @@ def _select_strategy(
 # UTILITÁRIOS DE PERSISTÊNCIA
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ══════════════════════════════════════════════════════════════════════════════
+# DETECÇÃO E CONVERSÃO HTML → PDF
+# Planalto.gov.br e outros portais retornam HTML com extensão .pdf
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _is_html_content(path: Path) -> bool:
+    """Verifica se o arquivo é HTML (mesmo com extensão .pdf)."""
+    try:
+        with open(path, "rb") as f:
+            header = f.read(512).lower()
+        return b"<!doctype html" in header or b"<html" in header or b"<meta" in header
+    except Exception:
+        return False
+
+
+def _html_to_markdown(path: Path) -> str:
+    """Converte HTML para Markdown limpo usando BeautifulSoup."""
+    from bs4 import BeautifulSoup
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+        # Tenta UTF-8, depois latin-1
+        for enc in ("utf-8", "latin-1", "cp1252"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            text = raw.decode("latin-1", errors="replace")
+
+        soup = BeautifulSoup(text, "html.parser")
+        # Remove scripts, estilos e navegação
+        for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
+            tag.decompose()
+
+        lines = []
+        for elem in soup.find_all(["h1","h2","h3","h4","p","li","td","th","pre"]):
+            t = elem.get_text(" ", strip=True)
+            if not t:
+                continue
+            if elem.name == "h1":
+                lines.append(f"# {t}")
+            elif elem.name == "h2":
+                lines.append(f"## {t}")
+            elif elem.name in ("h3","h4"):
+                lines.append(f"### {t}")
+            elif elem.name == "li":
+                lines.append(f"- {t}")
+            else:
+                lines.append(t)
+
+        return "\n\n".join(lines)
+    except Exception as e:
+        logger.warning(f"  ⚠ HTML→Markdown falhou: {e}")
+        return ""
+
+
+def _ensure_pdf(path: Path) -> Path:
+    """
+    Se o arquivo for HTML disfarçado de PDF, converte para .html
+    para que o Docling use o backend correto.
+    Retorna o path correto para uso no Docling.
+    """
+    if not _is_html_content(path):
+        return path  # é PDF real, retorna sem alteração
+
+    logger.info("  📄 Arquivo HTML detectado — usando backend HTML do Docling")
+    html_path = path.with_suffix(".html")
+    try:
+        # Copia com extensão .html para o Docling reconhecer
+        import shutil
+        shutil.copy2(path, html_path)
+        return html_path
+    except Exception as e:
+        logger.warning(f"  ⚠ Não foi possível criar .html: {e}")
+        return path
+
+
 def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -672,8 +751,11 @@ def process_pdf(
         logger.info("  ⏭ Já indexado (mesmo hash)")
         return {"status": "skipped", "file": file_name}
 
-    # ── 2. Docling: PDF → documento estruturado rico ──────────────────────────
-    logger.info("  🔍 Docling: convertendo PDF...")
+    # ── 2. Detecta tipo real do arquivo (pode ser HTML disfarçado de PDF) ─────
+    pdf_path = _ensure_pdf(pdf_path)
+
+    # ── 3. Docling: documento → estrutura rica ────────────────────────────────
+    logger.info("  🔍 Docling: convertendo documento...")
     result   = _converter().convert(str(pdf_path))
     markdown = result.document.export_to_markdown()
     pages    = len(result.document.pages) if result.document.pages else 0

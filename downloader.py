@@ -65,9 +65,9 @@ SOURCES: list[Source] = [
         folder_name="analista_contabil",
         description="CFC — NBC TG Completas (todas as normas técnicas gerais em um PDF)",
     ),
-    # CFC — NBC TG Estrutura Conceitual (CPC 00 R2)
+    # CFC — NBC TG Estrutura Conceitual (CPC 00 R2) — URL correta
     Source(
-        url="https://www1.cfc.org.br/sisweb/SRE/docs/NBCTG_EstruturaConceitual.pdf",
+        url="https://cfc.org.br/wp-content/uploads/2019/12/NBC_TG_Estrutura_Conceitual_2019.pdf",
         filename="NBC_TG_Estrutura_Conceitual_CFC.pdf",
         folder_name="analista_contabil",
         description="CFC — NBC TG Estrutura Conceitual para Relatório Financeiro (CPC 00 R2)",
@@ -104,9 +104,9 @@ SOURCES: list[Source] = [
         folder_name="analista_fiscal",
         description="EC 132/2023 — Emenda Constitucional da Reforma Tributária",
     ),
-    # ICMS federal
+    # ICMS federal — Lei Kandir
     Source(
-        url="https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp087compilado.htm",
+        url="https://www.planalto.gov.br/ccivil_03/leis/lcp/lcp87.htm",
         filename="LC_087_1996_Lei_Kandir_ICMS.pdf",
         folder_name="analista_fiscal",
         description="LC 87/1996 — Lei Kandir (ICMS)",
@@ -126,7 +126,7 @@ SOURCES: list[Source] = [
         description="Lei 10.637/2002 — PIS não-cumulativo (Lucro Real)",
     ),
     Source(
-        url="https://www.planalto.gov.br/ccivil_03/leis/2003/l10833compilado.htm",
+        url="https://www.planalto.gov.br/ccivil_03/leis/2003/l10833.htm",
         filename="Lei_10833_2003_COFINS_Nao_Cumulativa.pdf",
         folder_name="analista_fiscal",
         description="Lei 10.833/2003 — COFINS não-cumulativa (Lucro Real)",
@@ -139,7 +139,7 @@ SOURCES: list[Source] = [
     ),
     # IRPJ / CSLL
     Source(
-        url="https://www.planalto.gov.br/ccivil_03/decreto/d9580.htm",
+        url="https://www.planalto.gov.br/ccivil_03/_ato2019-2022/2018/decreto/d9580.htm",
         filename="RIR_Decreto_9580_2018_IRPJ_CSLL.pdf",
         folder_name="analista_fiscal",
         description="RIR — Regulamento do IRPJ (Decreto 9.580/2018 — versão atual)",
@@ -166,7 +166,7 @@ SOURCES: list[Source] = [
     ),
     # IOF
     Source(
-        url="https://www.planalto.gov.br/ccivil_03/decreto/d6306compilado.htm",
+        url="https://www.planalto.gov.br/ccivil_03/_ato2007-2010/2007/decreto/d6306.htm",
         filename="Decreto_6306_2007_IOF.pdf",
         folder_name="analista_fiscal",
         description="Decreto 6.306/2007 — Regulamento do IOF",
@@ -178,149 +178,9 @@ SOURCES: list[Source] = [
         folder_name="analista_fiscal",
         description="CTN — Código Tributário Nacional compilado",
     ),
-
-    # -------------------------------------------------------------------------
-    # ICMS MARANHÃO — Regulamento e Anexos
-    # -------------------------------------------------------------------------
-
-    # RICMS-MA — Decreto 19.714/2003 (texto principal)
-    Source(
-        url="https://www.sefaz.ma.gov.br/images/legislacao/RICMS_compilado.pdf",
-        filename="RICMS_MA_Decreto_19714_2003_Compilado.pdf",
-        folder_name="analista_fiscal",
-        description="RICMS-MA — Regulamento do ICMS do Maranhão (Decreto 19.714/2003 compilado)",
-    ),
-    # Anexo 1.1 — Isenções do ICMS-MA
-    Source(
-        url="https://www.sefaz.ma.gov.br/images/legislacao/RICMS_Anexo_1_1_Isencoes.pdf",
-        filename="RICMS_MA_Anexo_1_1_Isencoes.pdf",
-        folder_name="analista_fiscal",
-        description="RICMS-MA Anexo 1.1 — Isenções do ICMS",
-    ),
-    # Anexo 1.4 — Diferimento do ICMS-MA
-    Source(
-        url="https://www.sefaz.ma.gov.br/images/legislacao/RICMS_Anexo_1_4_Diferimento.pdf",
-        filename="RICMS_MA_Anexo_1_4_Diferimento.pdf",
-        folder_name="analista_fiscal",
-        description="RICMS-MA Anexo 1.4 — Diferimento do ICMS",
-    ),
-    # Anexo 1.5 — Redução de Base de Cálculo
-    Source(
-        url="https://www.sefaz.ma.gov.br/images/legislacao/RICMS_Anexo_1_5_Reducao_BC.pdf",
-        filename="RICMS_MA_Anexo_1_5_Reducao_Base_Calculo.pdf",
-        folder_name="analista_fiscal",
-        description="RICMS-MA Anexo 1.5 — Redução de base de cálculo do ICMS",
-    ),
-    # Anexo 1.6 — ICMS-ST (Substituição Tributária)
-    Source(
-        url="https://www.sefaz.ma.gov.br/images/legislacao/RICMS_Anexo_1_6_ST.pdf",
-        filename="RICMS_MA_Anexo_1_6_ICMS_ST.pdf",
-        folder_name="analista_fiscal",
-        description="RICMS-MA Anexo 1.6 — Substituição Tributária do ICMS",
-    ),
-    # Anexo — Gado bovino / operações com gado e carne
-    Source(
-        url="https://www.sefaz.ma.gov.br/images/legislacao/RICMS_Anexo_Gado_Bovino.pdf",
-        filename="RICMS_MA_Anexo_Gado_Bovino_Carne.pdf",
-        folder_name="analista_fiscal",
-        description="RICMS-MA — Operações com gado bovino e carne (diferimento/isenção)",
-    ),
-    # Lei 7.799/2002 — Lei do ICMS do Maranhão
-    Source(
-        url="https://www.sefaz.ma.gov.br/images/legislacao/Lei_7799_2002_ICMS_MA.pdf",
-        filename="Lei_7799_2002_ICMS_Maranhao.pdf",
-        folder_name="analista_fiscal",
-        description="Lei 7.799/2002 — Lei do ICMS do Estado do Maranhão",
-    ),
-
-    # -------------------------------------------------------------------------
-    # CONFAZ — Convênios e Protocolos ICMS
-    # -------------------------------------------------------------------------
-
-    # Convênio 142/2018 — Credenciamento contribuintes ST (substitui Conv. 81/1993)
-    Source(
-        url="https://www.confaz.fazenda.gov.br/legislacao/convenios/2018/CV142_18.htm",
-        filename="Convenio_ICMS_142_2018_ST_Credenciamento.pdf",
-        folder_name="analista_fiscal",
-        description="Convênio ICMS 142/2018 — Regras gerais de substituição tributária interestaduais",
-    ),
-    # Convênio 52/2017 — Regras gerais de ST (revogado parcialmente, ainda referenciado)
-    Source(
-        url="https://www.confaz.fazenda.gov.br/legislacao/convenios/2017/CV052_17.htm",
-        filename="Convenio_ICMS_052_2017_ST_Regras_Gerais.pdf",
-        folder_name="analista_fiscal",
-        description="Convênio ICMS 52/2017 — Regras gerais ST (base de cálculo, MVA, pauta)",
-    ),
-    # Convênio 93/2015 — DIFAL (Emenda 87/2015)
-    Source(
-        url="https://www.confaz.fazenda.gov.br/legislacao/convenios/2015/CV093_15.htm",
-        filename="Convenio_ICMS_093_2015_DIFAL_EC87.pdf",
-        folder_name="analista_fiscal",
-        description="Convênio ICMS 93/2015 — DIFAL nas operações interestaduais (EC 87/2015)",
-    ),
-    # Convênio 110/2007 — Combustíveis (ST)
-    Source(
-        url="https://www.confaz.fazenda.gov.br/legislacao/convenios/2007/CV110_07.htm",
-        filename="Convenio_ICMS_110_2007_Combustiveis_ST.pdf",
-        folder_name="analista_fiscal",
-        description="Convênio ICMS 110/2007 — Substituição tributária em combustíveis",
-    ),
-    # Convênio 19/2016 — Energia elétrica (ST)
-    Source(
-        url="https://www.confaz.fazenda.gov.br/legislacao/convenios/2016/CV019_16.htm",
-        filename="Convenio_ICMS_019_2016_Energia_Eletrica_ST.pdf",
-        folder_name="analista_fiscal",
-        description="Convênio ICMS 19/2016 — ST em energia elétrica",
-    ),
-    # Convênio 85/2011 — Crédito outorgado agropecuária
-    Source(
-        url="https://www.confaz.fazenda.gov.br/legislacao/convenios/2011/CV085_11.htm",
-        filename="Convenio_ICMS_085_2011_Credito_Outorgado_Agro.pdf",
-        folder_name="analista_fiscal",
-        description="Convênio ICMS 85/2011 — Crédito outorgado nas operações agropecuárias",
-    ),
-    # Convênio 100/1997 — Insumos agropecuários (isenção)
-    Source(
-        url="https://www.confaz.fazenda.gov.br/legislacao/convenios/1997/CV100_97.htm",
-        filename="Convenio_ICMS_100_1997_Insumos_Agropecuarios.pdf",
-        folder_name="analista_fiscal",
-        description="Convênio ICMS 100/1997 — Isenção ICMS insumos agropecuários",
-    ),
-    # Convênio 153/2015 — Remessa de bens para conserto (isenção)
-    Source(
-        url="https://www.confaz.fazenda.gov.br/legislacao/convenios/2015/CV153_15.htm",
-        filename="Convenio_ICMS_153_2015_Conserto_Reparo.pdf",
-        folder_name="analista_fiscal",
-        description="Convênio ICMS 153/2015 — Isenção em remessa de bens para conserto/reparo",
-    ),
-    # Protocolo ICMS 41/2008 — ST gado bovino e bufalino
-    Source(
-        url="https://www.confaz.fazenda.gov.br/legislacao/protocolos/2008/PT041_08.htm",
-        filename="Protocolo_ICMS_041_2008_ST_Gado_Bovino.pdf",
-        folder_name="analista_fiscal",
-        description="Protocolo ICMS 41/2008 — ST nas operações com gado bovino e bufalino",
-    ),
-    # Protocolo ICMS 104/2009 — ST aves e suínos
-    Source(
-        url="https://www.confaz.fazenda.gov.br/legislacao/protocolos/2009/PT104_09.htm",
-        filename="Protocolo_ICMS_104_2009_ST_Aves_Suinos.pdf",
-        folder_name="analista_fiscal",
-        description="Protocolo ICMS 104/2009 — ST nas operações com aves e suínos",
-    ),
-    # Ajuste SINIEF 07/2005 — NF-e
-    Source(
-        url="https://www.confaz.fazenda.gov.br/legislacao/ajustes/2005/AJ007_05.htm",
-        filename="Ajuste_SINIEF_07_2005_NFe.pdf",
-        folder_name="analista_fiscal",
-        description="Ajuste SINIEF 07/2005 — Nota Fiscal Eletrônica (NF-e)",
-    ),
-    # Ajuste SINIEF 22/2013 — MDF-e
-    Source(
-        url="https://www.confaz.fazenda.gov.br/legislacao/ajustes/2013/AJ022_13.htm",
-        filename="Ajuste_SINIEF_22_2013_MDFe.pdf",
-        folder_name="analista_fiscal",
-        description="Ajuste SINIEF 22/2013 — Manifesto Eletrônico de Documentos Fiscais (MDF-e)",
-    ),
+    # NOTA: RICMS-MA, Anexos, Convênios CONFAZ e Protocolos
+    # são obtidos pelo crawler.py (portal JSF + CONFAZ)
+    # e não via download direto (SSL/timeout)
 
     # =========================================================================
     # 3. ANALISTA DEPARTAMENTO PESSOAL
