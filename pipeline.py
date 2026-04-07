@@ -59,6 +59,10 @@ EXTRAÇÃO JSON (LLM por tipo de documento):
   norma_tecnica→ norma, tipo_orientacao, metodo_criterio
   trabalhista  → tipo, beneficiario, prazo_valor, evento_esocial
   societario   → tipo_societario, fase_ciclo, orgao_registro
+
+LLM UTILIZADO (sem Anthropic):
+  Prioridade 1: OpenAI gpt-4o-mini  (OPENAI_API_KEY)
+  Prioridade 2: Google Gemini 1.5 Flash (GEMINI_API_KEY)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -242,14 +246,6 @@ def _embeddings():
 @lru_cache(maxsize=1)
 def _llm():
     """LLM para extração de metadados JSON — temperatura 0."""
-    if settings.ANTHROPIC_API_KEY:
-        from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(
-            model="claude-haiku-4-5-20251001",
-            anthropic_api_key=settings.ANTHROPIC_API_KEY,
-            max_tokens=600,
-            temperature=0,
-        )
     if settings.OPENAI_API_KEY:
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
@@ -265,7 +261,7 @@ def _llm():
             google_api_key=settings.GEMINI_API_KEY,
             max_output_tokens=600,
         )
-    raise RuntimeError("Nenhuma chave de LLM configurada.")
+    raise RuntimeError("Nenhuma chave de LLM configurada (OPENAI_API_KEY ou GEMINI_API_KEY).")
 
 
 @lru_cache(maxsize=1)
@@ -761,7 +757,7 @@ def _sha256(path: Path) -> str:
 
 
 def _json_already_exists(table: str, file_hash: str) -> bool:
-    """Verifica se os embeddings já foram indexados no Supabase (Fase 2 concluída)."""
+    """Verifica se o JSON já foi gerado (parent com este hash existe no Supabase)."""
     resp = (
         _supabase().table(table)
         .select("id")
@@ -771,12 +767,6 @@ def _json_already_exists(table: str, file_hash: str) -> bool:
         .execute()
     )
     return len(resp.data) > 0
-
-
-def _json_exists_in_drive(svc, json_filename: str, folder_id: str) -> bool:
-    """Verifica se o .json já existe no Google Drive (evita regerar na Fase 1)."""
-    from gdrive import _get_file_id_in_folder
-    return _get_file_id_in_folder(svc, json_filename, folder_id) is not None
 
 
 def _embedding_already_exists(table: str, file_hash: str) -> bool:
@@ -823,37 +813,10 @@ def process_pdf(
 
     file_hash = _sha256(pdf_path)
 
-    # ── Resolve pasta no Drive (necessário para a verificação de existência) ──
-    from gdrive import _get_service, _get_or_create_folder, _upload_bytes_to_drive, _get_file_id_in_folder
-
-    json_filename = file_name.rsplit(".", 1)[0] + ".json"
-    svc       = _get_service()
-    folder_id = _get_or_create_folder(svc, folder_name, settings.GDRIVE_ROOT_FOLDER_ID)
-
-    # Verifica se o JSON já existe no Drive com o mesmo hash → pula Fase 1
-    existing_json_id = _get_file_id_in_folder(svc, json_filename, folder_id)
-    if existing_json_id:
-        # Confirma que o hash bate baixando apenas os metadados do JSON
-        try:
-            raw = _get_service().files().get(
-                fileId=existing_json_id,
-                fields="description",
-                supportsAllDrives=True,
-            ).execute()
-            stored_hash = raw.get("description", "")
-        except Exception:
-            stored_hash = ""
-
-        if stored_hash == file_hash:
-            logger.info(f"  ⏭ JSON '{json_filename}' já existe no Drive (mesmo hash) — pulando Fase 1")
-            return {
-                "status":    "json_exists",
-                "file":      file_name,
-                "json_file": json_filename,
-                "file_hash": file_hash,
-            }
-        else:
-            logger.info(f"  🔄 JSON existe mas hash mudou — regenerando '{json_filename}'")
+    # Verifica se o JSON já foi gerado anteriormente
+    if _json_already_exists(table_name, file_hash):
+        logger.info("  ⏭ JSON já existe no Drive (mesmo hash) — pulando Fase 1")
+        return {"status": "json_exists", "file": file_name, "file_hash": file_hash}
 
     # ── Detecta HTML disfarçado de PDF ────────────────────────────────────────
     doc_path = _ensure_correct_extension(pdf_path)
@@ -956,38 +919,27 @@ def process_pdf(
     }
 
     # ── Salva .json no Google Drive ───────────────────────────────────────────
-    # (svc e folder_id já foram resolvidos no início da função)
-    json_bytes = json.dumps(json_payload, ensure_ascii=False, indent=2).encode("utf-8")
+    from gdrive import _get_service, _get_or_create_folder, _upload_bytes_to_drive, _get_file_id_in_folder
 
-    existing_id = _get_file_id_in_folder(svc, json_filename, folder_id)
-    if existing_id:
-        # Atualiza o arquivo existente — evita criar duplicatas no Drive
-        from googleapiclient.http import MediaIoBaseUpload
-        import io as _io
-        media = MediaIoBaseUpload(_io.BytesIO(json_bytes), mimetype="application/json", resumable=True)
-        svc.files().update(
-            fileId=existing_id,
-            body={"description": file_hash},   # armazena hash para detecção rápida
-            media_body=media,
-            supportsAllDrives=True,
-        ).execute()
-        drive_json_id = existing_id
-        logger.success(f"  ✅ JSON atualizado no Drive: {json_filename} → {drive_json_id}")
-    else:
-        drive_json_id = _upload_bytes_to_drive(
-            svc, json_bytes, json_filename, folder_id,
-            mime_type="application/json"
-        )
-        # Salva o hash no campo description para verificação futura rápida
+    json_filename = file_name.rsplit(".", 1)[0] + ".json"
+    json_bytes    = json.dumps(json_payload, ensure_ascii=False, indent=2).encode("utf-8")
+
+    svc       = _get_service()
+    folder_id = _get_or_create_folder(svc, folder_name, settings.GDRIVE_ROOT_FOLDER_ID)
+
+    # Remove versão anterior se existir
+    old_id = _get_file_id_in_folder(svc, json_filename, folder_id)
+    if old_id:
         try:
-            svc.files().update(
-                fileId=drive_json_id,
-                body={"description": file_hash},
-                supportsAllDrives=True,
-            ).execute()
+            svc.files().delete(fileId=old_id, supportsAllDrives=True).execute()
         except Exception:
             pass
-        logger.success(f"  ✅ JSON salvo no Drive: {json_filename} → {drive_json_id}")
+
+    drive_json_id = _upload_bytes_to_drive(
+        svc, json_bytes, json_filename, folder_id,
+        mime_type="application/json"
+    )
+    logger.success(f"  ✅ JSON salvo no Drive: {json_filename} → {drive_json_id}")
 
     return {
         "status":       "json_saved",
