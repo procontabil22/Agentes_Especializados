@@ -59,10 +59,6 @@ EXTRAÇÃO JSON (LLM por tipo de documento):
   norma_tecnica→ norma, tipo_orientacao, metodo_criterio
   trabalhista  → tipo, beneficiario, prazo_valor, evento_esocial
   societario   → tipo_societario, fase_ciclo, orgao_registro
-
-LLM UTILIZADO (sem Anthropic):
-  Prioridade 1: OpenAI gpt-4o-mini  (OPENAI_API_KEY)
-  Prioridade 2: Google Gemini 1.5 Flash (GEMINI_API_KEY)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
@@ -246,6 +242,14 @@ def _embeddings():
 @lru_cache(maxsize=1)
 def _llm():
     """LLM para extração de metadados JSON — temperatura 0."""
+    if settings.ANTHROPIC_API_KEY:
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(
+            model="claude-haiku-4-5-20251001",
+            anthropic_api_key=settings.ANTHROPIC_API_KEY,
+            max_tokens=600,
+            temperature=0,
+        )
     if settings.OPENAI_API_KEY:
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
@@ -261,7 +265,7 @@ def _llm():
             google_api_key=settings.GEMINI_API_KEY,
             max_output_tokens=600,
         )
-    raise RuntimeError("Nenhuma chave de LLM configurada (OPENAI_API_KEY ou GEMINI_API_KEY).")
+    raise RuntimeError("Nenhuma chave de LLM configurada.")
 
 
 @lru_cache(maxsize=1)
@@ -647,16 +651,18 @@ def _extract_ncms_from_table(table_md: str, source_meta: dict, parent_id: str) -
     return ncm_records
 
 
-def _extract_tables(docling_result: Any, source_meta: dict) -> tuple[list[dict], list[dict]]:
+def _extract_tables(docling_result: Any, source_meta: dict) -> tuple[list[dict], list[dict], list[dict]]:
     """
     Extrai tabelas do Docling.
-    Retorna: (table_chunks para kb_agente, ncm_records para kb_ncm_fiscal)
+    Retorna: (table_chunks, table_children, ncm_records)
 
-    table_chunks = parents especiais com conteúdo da tabela
-    ncm_records  = registros individuais por NCM extraídos das tabelas
+    table_chunks   = parents especiais com conteúdo da tabela
+    table_children = um child por tabela (necessário para geração de embeddings)
+    ncm_records    = registros individuais por NCM extraídos das tabelas
     """
-    table_chunks: list[dict] = []
-    ncm_records:  list[dict] = []
+    table_chunks:    list[dict] = []
+    table_children:  list[dict] = []
+    ncm_records:     list[dict] = []
 
     try:
         for i, table in enumerate(docling_result.document.tables or []):
@@ -684,6 +690,16 @@ def _extract_tables(docling_result: Any, source_meta: dict) -> tuple[list[dict],
                                     "chunk_level": "parent", "parent_id": pid},
                 })
 
+                # Gera um child para que a tabela seja pesquisável via embedding
+                table_children.append({
+                    "content":     f"[TABELA {i + 1}]\n{tmd}",
+                    "parent_id":   pid,
+                    "chunk_level": "child",
+                    "chunk_index": idx + 1,
+                    "metadata":    {**base, "chunk_index": idx + 1,
+                                    "chunk_level": "child", "parent_id": pid},
+                })
+
                 # Tenta extrair NCMs desta tabela
                 extracted = _extract_ncms_from_table(tmd, source_meta, pid)
                 if extracted:
@@ -699,7 +715,7 @@ def _extract_tables(docling_result: Any, source_meta: dict) -> tuple[list[dict],
     if ncm_records:
         logger.info(f"  📦 Total NCMs extraídos das tabelas: {len(ncm_records)}")
 
-    return table_chunks, ncm_records
+    return table_chunks, table_children, ncm_records
 
 
 def _upsert_ncm_records(ncm_records: list[dict]) -> None:
@@ -756,17 +772,10 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _json_already_exists(table: str, file_hash: str) -> bool:
-    """Verifica se o JSON já foi gerado (parent com este hash existe no Supabase)."""
-    resp = (
-        _supabase().table(table)
-        .select("id")
-        .eq("file_hash", file_hash)
-        .eq("chunk_level", "parent")
-        .limit(1)
-        .execute()
-    )
-    return len(resp.data) > 0
+def _json_already_exists_in_drive(svc, json_filename: str, folder_id: str) -> bool:
+    """Verifica se o .json já existe no Google Drive (não no Supabase)."""
+    from gdrive import _get_file_id_in_folder
+    return _get_file_id_in_folder(svc, json_filename, folder_id) is not None
 
 
 def _embedding_already_exists(table: str, file_hash: str) -> bool:
@@ -811,12 +820,22 @@ def process_pdf(
     """
     logger.info(f"▶ [FASE 1] {file_name}")
 
-    file_hash = _sha256(pdf_path)
+    from gdrive import _get_service, _get_or_create_folder, _upload_bytes_to_drive, _get_file_id_in_folder
 
-    # Verifica se o JSON já foi gerado anteriormente
-    if _json_already_exists(table_name, file_hash):
-        logger.info("  ⏭ JSON já existe no Drive (mesmo hash) — pulando Fase 1")
-        return {"status": "json_exists", "file": file_name, "file_hash": file_hash}
+    file_hash     = _sha256(pdf_path)
+    json_filename = file_name.rsplit(".", 1)[0] + ".json"
+    svc           = _get_service()
+    folder_id     = _get_or_create_folder(svc, folder_name, settings.GDRIVE_ROOT_FOLDER_ID)
+
+    # Verifica se o JSON já existe no Drive (fonte autoritativa — não no Supabase)
+    if _json_already_exists_in_drive(svc, json_filename, folder_id):
+        logger.info("  ⏭ JSON já existe no Drive — pulando Fase 1")
+        return {
+            "status":    "json_exists",
+            "file":      file_name,
+            "json_file": json_filename,   # ← sempre presente para a Fase 2
+            "file_hash": file_hash,
+        }
 
     # ── Detecta HTML disfarçado de PDF ────────────────────────────────────────
     doc_path = _ensure_correct_extension(pdf_path)
@@ -848,9 +867,10 @@ def process_pdf(
     parents, children = _select_strategy(doc_type, markdown, source_meta)
 
     # ── Tabelas Docling ───────────────────────────────────────────────────────
-    table_chunks, ncm_records = _extract_tables(result, source_meta)
+    table_chunks, table_children, ncm_records = _extract_tables(result, source_meta)
     if table_chunks:
         parents.extend(table_chunks)
+        children.extend(table_children)
         logger.info(f"  📊 {len(table_chunks)} tabela(s) | {len(ncm_records)} NCM(s) extraídos")
 
     # Salva NCMs na tabela dedicada
@@ -919,13 +939,7 @@ def process_pdf(
     }
 
     # ── Salva .json no Google Drive ───────────────────────────────────────────
-    from gdrive import _get_service, _get_or_create_folder, _upload_bytes_to_drive, _get_file_id_in_folder
-
-    json_filename = file_name.rsplit(".", 1)[0] + ".json"
-    json_bytes    = json.dumps(json_payload, ensure_ascii=False, indent=2).encode("utf-8")
-
-    svc       = _get_service()
-    folder_id = _get_or_create_folder(svc, folder_name, settings.GDRIVE_ROOT_FOLDER_ID)
+    json_bytes = json.dumps(json_payload, ensure_ascii=False, indent=2).encode("utf-8")
 
     # Remove versão anterior se existir
     old_id = _get_file_id_in_folder(svc, json_filename, folder_id)
@@ -993,6 +1007,28 @@ def index_from_json(
     if _embedding_already_exists(table_name, file_hash):
         logger.info(f"  ⏭ Embeddings já existem para {file_name}")
         return {"status": "already_indexed", "file": file_name}
+
+    # ── Bug 4: limpeza de estado inconsistente ────────────────────────────────
+    # Se parents existem no Supabase (de uma indexação anterior incompleta)
+    # mas os embeddings não existem, deleta os parents órfãos para garantir
+    # que o upsert da Fase 2 não deixe registros duplicados ou sem embedding.
+    try:
+        orphan_check = (
+            _supabase().table(table_name)
+            .select("id")
+            .eq("file_hash", file_hash)
+            .eq("chunk_level", "parent")
+            .limit(1)
+            .execute()
+        )
+        if orphan_check.data:
+            logger.warning(
+                f"  ⚠ Parents órfãos detectados para {file_name} "
+                f"(sem embeddings) — removendo antes de reindexar"
+            )
+            _supabase().table(table_name).delete().eq("file_hash", file_hash).execute()
+    except Exception as _e:
+        logger.debug(f"  Verificação de orphans ignorada: {_e}")
 
     chunks    = payload.get("chunks", [])
     source_meta = {
