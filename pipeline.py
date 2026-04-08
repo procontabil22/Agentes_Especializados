@@ -65,7 +65,10 @@ EXTRAÇÃO JSON (LLM por tipo de documento):
 import hashlib
 import json
 import re
+import signal
 import uuid
+import warnings
+from collections import defaultdict
 from datetime import datetime
 from enum import Enum
 from functools import lru_cache
@@ -75,7 +78,8 @@ from typing import Any, Optional
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from loguru import logger
 
-import warnings
+from settings import settings
+
 warnings.filterwarnings("ignore", message=".*pin_memory.*", category=UserWarning)
 
 # Arquivos permanentemente problemáticos — serão ignorados pelo pipeline
@@ -271,8 +275,6 @@ def _llm():
         )
     raise RuntimeError("Nenhuma chave de LLM configurada.")
 
-
-import signal
 
 def _convert_with_timeout(doc_path: Path, timeout_secs: int = 120):
     """Converte documento com timeout via SIGALRM (Linux only)."""
@@ -913,7 +915,6 @@ def process_pdf(
     pid_to_json = {p["parent_id"]: parent_jsons[i] for i, p in enumerate(parents)}
 
     # Índice para lookup O(1) de children por parent_id
-    from collections import defaultdict
     children_by_parent: dict = defaultdict(list)
     for c in children:
         children_by_parent[c["parent_id"]].append(c)
@@ -959,7 +960,7 @@ def process_pdf(
     }
 
     # ── Salva .json no Google Drive ───────────────────────────────────────────
-    from gdrive import _upload_bytes_to_drive
+    from gdrive import _get_service, _get_or_create_folder, _upload_bytes_to_drive, _get_file_id_in_folder
 
     json_filename = file_name.rsplit(".", 1)[0] + ".json"
     json_bytes    = json.dumps(json_payload, ensure_ascii=False, indent=2).encode("utf-8")
