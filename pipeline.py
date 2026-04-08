@@ -75,7 +75,11 @@ from typing import Any, Optional
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from loguru import logger
 
-from settings import settings
+import warnings
+warnings.filterwarnings("ignore", message=".*pin_memory.*", category=UserWarning)
+
+# Arquivos permanentemente problemáticos — serão ignorados pelo pipeline
+SKIP_FILES: set[str] = set()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -268,6 +272,20 @@ def _llm():
     raise RuntimeError("Nenhuma chave de LLM configurada.")
 
 
+import signal
+
+def _convert_with_timeout(doc_path: Path, timeout_secs: int = 120):
+    """Converte documento com timeout via SIGALRM (Linux only)."""
+    def _handler(signum, frame):
+        raise TimeoutError(f"Docling timeout após {timeout_secs}s")
+    signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(timeout_secs)
+    try:
+        return _converter().convert(str(doc_path))
+    finally:
+        signal.alarm(0)
+
+
 @lru_cache(maxsize=1)
 def _converter():
     from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -334,35 +352,13 @@ def _is_html(path: Path) -> bool:
 
 
 def _ensure_correct_extension(path: Path) -> Path:
-    """
-    Renomeia .pdf para .html se o conteúdo for HTML (Planalto retorna HTML).
-    Re-salva sempre em UTF-8 para evitar UnicodeDecodeError no Docling
-    (páginas do Planalto costumam vir em latin-1/iso-8859-1).
-    """
+    """Renomeia .pdf para .html se o conteúdo for HTML (Planalto retorna HTML)."""
     if not _is_html(path):
         return path
-
-    raw = path.read_bytes()
-
-    # Tenta detectar encoding pelo meta charset
-    charset_match = re.search(rb'charset=["\'\']?([\'\\w-]+)', raw, re.I)
-    if charset_match:
-        detected = charset_match.group(1).decode("ascii", errors="ignore")
-    else:
-        try:
-            import chardet
-            detected = chardet.detect(raw).get("encoding") or "latin-1"
-        except ImportError:
-            detected = "latin-1"
-
-    try:
-        text = raw.decode(detected, errors="replace")
-    except (LookupError, UnicodeDecodeError):
-        text = raw.decode("latin-1", errors="replace")
-
     html_path = path.with_suffix(".html")
-    html_path.write_text(text, encoding="utf-8")
-    logger.info(f"  📄 HTML detectado (encoding: {detected}) — re-salvo em UTF-8 para o Docling")
+    import shutil
+    shutil.copy2(path, html_path)
+    logger.info("  📄 HTML detectado — usando backend HTML do Docling")
     return html_path
 
 
@@ -837,11 +833,19 @@ def process_pdf(
     """
     logger.info(f"▶ [FASE 1] {file_name}")
 
-    file_hash = _sha256(pdf_path)
+    if file_name in SKIP_FILES:
+        logger.warning(f"  ⏭ {file_name} está na lista SKIP_FILES — ignorado")
+        return {"status": "skipped", "file": file_name}
 
-    # Verifica se o JSON já foi gerado anteriormente
-    if _json_already_exists(table_name, file_hash):
-        logger.info("  ⏭ JSON já existe no Drive (mesmo hash) — pulando Fase 1")
+    file_hash = _sha256(pdf_path)
+    json_filename = file_name.rsplit(".", 1)[0] + ".json"
+
+    # Verifica se o JSON já existe no Drive (fonte de verdade da Fase 1)
+    from gdrive import _get_service, _get_or_create_folder, _get_file_id_in_folder
+    _svc       = _get_service()
+    _folder_id = _get_or_create_folder(_svc, folder_name, settings.GDRIVE_ROOT_FOLDER_ID)
+    if _get_file_id_in_folder(_svc, json_filename, _folder_id):
+        logger.info("  ⏭ JSON já existe no Drive (mesmo nome) — pulando Fase 1")
         return {"status": "json_exists", "file": file_name, "file_hash": file_hash}
 
     # ── Detecta HTML disfarçado de PDF ────────────────────────────────────────
@@ -849,7 +853,11 @@ def process_pdf(
 
     # ── Docling: documento → markdown estruturado ─────────────────────────────
     logger.info("  🔍 Docling: convertendo documento...")
-    result   = _converter().convert(str(doc_path))
+    try:
+        result = _convert_with_timeout(doc_path, timeout_secs=120)
+    except TimeoutError as e:
+        logger.error(f"  ✗ {file_name}: {e}")
+        return {"status": "error", "file": file_name, "error": str(e)}
     markdown = result.document.export_to_markdown()
     pages    = len(result.document.pages) if result.document.pages else 0
     logger.info(f"  Docling OK: {pages} páginas | {len(markdown):,} chars")
@@ -904,6 +912,12 @@ def process_pdf(
     # ── Monta payload JSON para salvar no Drive ───────────────────────────────
     pid_to_json = {p["parent_id"]: parent_jsons[i] for i, p in enumerate(parents)}
 
+    # Índice para lookup O(1) de children por parent_id
+    from collections import defaultdict
+    children_by_parent: dict = defaultdict(list)
+    for c in children:
+        children_by_parent[c["parent_id"]].append(c)
+
     chunks_payload = []
     for i, p in enumerate(parents):
         pjson    = parent_jsons[i]
@@ -913,7 +927,7 @@ def process_pdf(
                 "content":     c["content"],
                 "parent_id":   c["parent_id"],
             }
-            for c in children if c["parent_id"] == p["parent_id"]
+            for c in children_by_parent.get(p["parent_id"], [])
         ]
         chunks_payload.append({
             "parent_id":   p["parent_id"],
@@ -945,7 +959,7 @@ def process_pdf(
     }
 
     # ── Salva .json no Google Drive ───────────────────────────────────────────
-    from gdrive import _get_service, _get_or_create_folder, _upload_bytes_to_drive, _get_file_id_in_folder
+    from gdrive import _upload_bytes_to_drive
 
     json_filename = file_name.rsplit(".", 1)[0] + ".json"
     json_bytes    = json.dumps(json_payload, ensure_ascii=False, indent=2).encode("utf-8")
