@@ -353,14 +353,54 @@ def _is_html(path: Path) -> bool:
         return False
 
 
+def _detect_encoding(path: Path) -> str:
+    """
+    Detecta encoding do arquivo HTML.
+    Planalto e portais gov.br frequentemente servem Latin-1/ISO-8859-1
+    mesmo que o <meta charset> declare outro valor.
+    """
+    try:
+        import charset_normalizer
+        with open(path, "rb") as f:
+            raw = f.read()
+        result = charset_normalizer.from_bytes(raw).best()
+        if result:
+            return str(result.encoding)
+    except ImportError:
+        pass
+
+    with open(path, "rb") as f:
+        raw = f.read()
+    try:
+        raw.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError:
+        return "latin-1"
+
+
 def _ensure_correct_extension(path: Path) -> Path:
-    """Renomeia .pdf para .html se o conteúdo for HTML (Planalto retorna HTML)."""
+    """
+    Renomeia .pdf para .html se o conteúdo for HTML (Planalto retorna HTML).
+    Recodifica para UTF-8 para que o backend HTML do Docling consiga abrir.
+    Portais do governo frequentemente servem HTML em Latin-1/ISO-8859-1.
+    """
     if not _is_html(path):
         return path
+
     html_path = path.with_suffix(".html")
-    import shutil
-    shutil.copy2(path, html_path)
-    logger.info("  📄 HTML detectado — usando backend HTML do Docling")
+    encoding  = _detect_encoding(path)
+
+    if encoding.lower().replace("-", "").replace("_", "") in ("utf8", "utf8sig"):
+        import shutil
+        shutil.copy2(path, html_path)
+        logger.info("  📄 HTML detectado (UTF-8) — usando backend HTML do Docling")
+    else:
+        with open(path, "r", encoding=encoding, errors="replace") as f:
+            content = f.read()
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        logger.info(f"  📄 HTML detectado ({encoding} → UTF-8) — usando backend HTML do Docling")
+
     return html_path
 
 
