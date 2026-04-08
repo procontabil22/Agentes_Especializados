@@ -1,5 +1,5 @@
 """
-pipeline_v2.py — Pipeline em Duas Fases (versão corrigida)
+pipeline_v2.py — Pipeline em Duas Fases (v2)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FASE 1 — process_pdf()
@@ -9,27 +9,83 @@ FASE 1 — process_pdf()
 
 FASE 2 — index_from_json()
   Lê .json do Google Drive → Gera embeddings (OpenAI)
-  → Upsert incremental no Supabase (tabela vetorizada do agente)
+  → Upsert no Supabase (tabela vetorizada do agente)
   → Retorna status "indexed"
 
-CORREÇÕES v2:
-  ✓ [1] Verificação de re-processamento no Drive (não no Supabase)
-  ✓ [2] Extração LLM paralela com ThreadPoolExecutor
-  ✓ [3] Reutiliza cliente Supabase cacheado em _upsert_ncm_records
-  ✓ [4] Recodificação HTML cp1252/latin-1 → UTF-8 explícita
-  ✓ [5] Log claro de parents descartados pelo limite MAX_JSON
-  ✓ [6] Amostra de detecção de tipo ampliada para 2.000 chars
-  ✓ [7] _FOLDER_DOCTYPE carregado de settings (com fallback hardcoded)
-  ✓ [8] Prompts LLM carregados de arquivos .txt externos (com fallback inline)
-  ✓ [9] Retry com backoff exponencial nas chamadas LLM e embedding
-  ✓ [10] Embeddings gravados incrementalmente (children por lote persistido)
+VANTAGENS DA ARQUITETURA EM DUAS FASES:
+  ✓ JSON auditável e editável antes de indexar
+  ✓ Reindexação barata (sem re-rodar Docling + LLM)
+  ✓ Rastreabilidade: cada PDF tem um .json correspondente no Drive
+  ✓ Custo: Docling (CPU) e LLM (tokens) executam só uma vez
+
+VERIFICAÇÃO POR HASH — PAPÉIS SEPARADOS:
+  Drive  = fonte da verdade para Fase 1
+           checa se <hash>.json já existe → evita re-processar LLM
+  Supabase = log de execução para Fase 2
+           checa se embeddings já existem → evita re-embedding
+
+ESTRUTURA DO JSON NO DRIVE:
+  analista_fiscal/
+    ├── Lei_7689_1988_CSLL.pdf
+    └── Lei_7689_1988_CSLL.json   ← gerado pela Fase 1
+
+ESTRUTURA DO JSON:
+  {
+    "file_name": "Lei_7689_1988_CSLL.pdf",
+    "file_hash": "sha256...",
+    "doc_type": "legislacao",
+    "pages": 8,
+    "indexed_at": "2026-...",
+    "chunks": [
+      {
+        "parent_id": "uuid",
+        "chunk_level": "parent",
+        "chunk_index": 0,
+        "unit_type": "artigo",
+        "unit_number": "1",
+        "content": "Art. 1º ...",
+        "h1": "...", "h2": "...",
+        "structured": { ... JSON do LLM ... },
+        "children": [
+          { "chunk_index": 0, "content": "...", "parent_id": "uuid" }
+        ]
+      }
+    ]
+  }
+
+CHUNKING INTELIGENTE (adaptativo por tipo):
+  LEGISLAÇÃO/TRABALHISTA/SOCIETÁRIO → por ARTIGO
+  CONVÊNIO CONFAZ                  → por CLÁUSULA
+  NORMA TÉCNICA NBC/CPC            → por SEÇÃO (H1/H2/H3)
+  GENÉRICO                         → seções + fallback artigos
+
+EXTRAÇÃO JSON (LLM por tipo de documento):
+  legislacao   → tipo_norma, artigo, beneficio_fiscal, tributo, ncm_cfop
+  convenio     → numero_convenio, clausula, tipo, estados, aliquota_mva
+  norma_tecnica→ norma, tipo_orientacao, metodo_criterio
+  trabalhista  → tipo, beneficiario, prazo_valor, evento_esocial
+  societario   → tipo_societario, fase_ciclo, orgao_registro
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FIXES v2:
+  [FIX 1] process_pdf checa .json no Drive ANTES de calcular o hash completo
+          Drive = fonte da verdade; Supabase resetado não causa re-processamento
+  [FIX 2] _extract_json_parallel — ThreadPoolExecutor substituindo loop sequencial
+          Configurável via settings.LLM_WORKERS (padrão 8)
+  [FIX 3] _upsert_ncm_records usa _supabase() cacheado em vez de create_client()
+  [FIX 4] _ensure_correct_extension recodifica HTML do Planalto (cp1252 → UTF-8)
+  [FIX 5] Descarte de parents acima de MAX_JSON é logado com contagem explícita
+  [FIX 6] Amostra para _detect_doc_type ampliada: 800 → 2.000 chars
+  [FIX 7] _FOLDER_DOCTYPE carregado de settings.AGENT_DOCTYPE_MAP se existir
+  [FIX 8] Prompts carregados de prompts/<doctype>.txt se a pasta existir
+  [FIX 9] @retry (tenacity) em _extract_json e _embed_batch_with_retry
+  [FIX 10] index_from_json salva embeddings incrementalmente por lote;
+           chunk_index já embedados no Supabase são pulados
 """
 
 import hashlib
 import json
 import re
-import shutil
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -40,7 +96,7 @@ from typing import Any, Optional
 
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from loguru import logger
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from settings import settings
 
@@ -58,8 +114,7 @@ class DocType(str, Enum):
     GENERICO      = "generico"
 
 
-# FIX #7 — carrega mapeamento pasta→DocType de settings se disponível,
-# com fallback para o dicionário hardcoded original.
+# FIX 7 — carrega mapa de settings se disponível, fallback para hardcoded
 _FOLDER_DOCTYPE_DEFAULT: dict[str, DocType] = {
     "analista_fiscal":               DocType.LEGISLACAO,
     "analista_contabil":             DocType.NORMA_TECNICA,
@@ -68,37 +123,42 @@ _FOLDER_DOCTYPE_DEFAULT: dict[str, DocType] = {
     "analista_abertura_empresas":    DocType.SOCIETARIO,
 }
 
-def _load_folder_doctype() -> dict[str, DocType]:
-    raw: dict = getattr(settings, "AGENT_DOCTYPE_MAP", {})
+def _build_folder_doctype() -> dict[str, DocType]:
+    """
+    Monta o mapa folder→DocType a partir de settings.AGENT_DOCTYPE_MAP se existir.
+    Para adicionar novos analistas sem tocar no código:
+        # settings.py
+        AGENT_DOCTYPE_MAP = {
+            "analista_ambiental": "legislacao",
+            "analista_tributario_estadual": "convenio",
+        }
+    """
+    raw: dict[str, str] = getattr(settings, "AGENT_DOCTYPE_MAP", {})
     if not raw:
-        return _FOLDER_DOCTYPE_DEFAULT
-    result = {}
+        return _FOLDER_DOCTYPE_DEFAULT.copy()
+    result = _FOLDER_DOCTYPE_DEFAULT.copy()
     for folder, dtype_str in raw.items():
         try:
             result[folder] = DocType(dtype_str)
         except ValueError:
-            logger.warning(f"  ⚠ AGENT_DOCTYPE_MAP: tipo desconhecido '{dtype_str}' para '{folder}' — usando GENERICO")
-            result[folder] = DocType.GENERICO
+            logger.warning(f"  ⚠ AGENT_DOCTYPE_MAP: '{dtype_str}' não é DocType válido — ignorado")
     return result
 
-_FOLDER_DOCTYPE = _load_folder_doctype()
+_FOLDER_DOCTYPE: dict[str, DocType] = _build_folder_doctype()
 
-
-_RE_CONVENIO   = re.compile(r"conv[eê]nio\s+icms|protocolo\s+icms|ajuste\s+sinief|confaz", re.I)
-_RE_NORMA      = re.compile(r"\bnbc\s+t[ga]\b|\bcpc\s+\d|\bcfc\b|\bifrs\b|\bicpc\b|\bocpc\b", re.I)
-_RE_ARTIGO     = re.compile(r"(?m)^\s*(?:Art(?:igo)?\.?\s*\d+[º°oa]?|§\s*\d+[º°oa]?)\s*[.\-–—]")
-_RE_CLAUSULA   = re.compile(r"(?mi)^\s*Cl[aá]usula\s+\w+")
+_RE_CONVENIO = re.compile(r"conv[eê]nio\s+icms|protocolo\s+icms|ajuste\s+sinief|confaz", re.I)
+_RE_NORMA    = re.compile(r"\bnbc\s+t[ga]\b|\bcpc\s+\d|\bcfc\b|\bifrs\b|\bicpc\b|\bocpc\b", re.I)
+_RE_ARTIGO   = re.compile(r"(?m)^\s*(?:Art(?:igo)?\.?\s*\d+[º°oa]?|§\s*\d+[º°oa]?)\s*[.\-–—]")
+_RE_CLAUSULA = re.compile(r"(?mi)^\s*Cl[aá]usula\s+\w+")
 _RE_JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FIX #8 — PROMPTS LLM: carregados de arquivos externos, com fallback inline
-# Estrutura esperada (opcional): prompts/legislacao.txt, prompts/convenio.txt, ...
+# PROMPTS DE EXTRAÇÃO JSON POR TIPO
+# FIX 8 — prompts carregados de prompts/<doctype>.txt se existir
 # ══════════════════════════════════════════════════════════════════════════════
 
-_PROMPTS_DIR = Path(__file__).parent / "prompts"
-
-_SYSTEM_PROMPTS_INLINE: dict[DocType, str] = {
+_SYSTEM_PROMPTS_DEFAULT: dict[DocType, str] = {
 
     DocType.LEGISLACAO: """\
 Você é especialista em legislação tributária brasileira.
@@ -198,24 +258,24 @@ Analise o trecho e retorne SOMENTE um objeto JSON válido:
 
 def _load_system_prompts() -> dict[DocType, str]:
     """
-    FIX #8: tenta carregar prompts de arquivos .txt em prompts/<doctype>.txt.
-    Se o arquivo não existir, usa o prompt inline como fallback.
-    Isso permite customizar prompts por analista sem editar o código.
+    FIX 8 — carrega prompts de prompts/<doctype>.txt se a pasta existir.
+    Para customizar sem tocar no código: crie prompts/legislacao.txt
     """
-    prompts = dict(_SYSTEM_PROMPTS_INLINE)
-    if not _PROMPTS_DIR.exists():
+    prompts = _SYSTEM_PROMPTS_DEFAULT.copy()
+    prompts_dir = Path("prompts")
+    if not prompts_dir.is_dir():
         return prompts
     for doc_type in DocType:
-        prompt_file = _PROMPTS_DIR / f"{doc_type.value}.txt"
-        if prompt_file.exists():
+        txt_path = prompts_dir / f"{doc_type.value}.txt"
+        if txt_path.is_file():
             try:
-                prompts[doc_type] = prompt_file.read_text(encoding="utf-8").strip()
-                logger.debug(f"  📝 Prompt externo carregado: {prompt_file.name}")
+                prompts[doc_type] = txt_path.read_text(encoding="utf-8").strip()
+                logger.debug(f"  📝 Prompt externo carregado: {txt_path}")
             except Exception as e:
-                logger.warning(f"  ⚠ Falha ao carregar {prompt_file}: {e} — usando inline")
+                logger.warning(f"  ⚠ Falha ao carregar {txt_path}: {e}")
     return prompts
 
-_SYSTEM_PROMPTS = _load_system_prompts()
+_SYSTEM_PROMPTS: dict[DocType, str] = _load_system_prompts()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -227,6 +287,8 @@ _PARENT_OVERLAP = 100
 _CHILD_SIZE     = settings.CHUNK_SIZE * 2
 _CHILD_OVERLAP  = settings.CHUNK_OVERLAP * 2
 _ARTICLE_MAX    = settings.CHUNK_SIZE * 8
+
+MAX_JSON = 200  # limite de parents que recebem extração LLM
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -294,12 +356,11 @@ def _converter():
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DETECÇÃO DE TIPO
-# FIX #6 — amostra ampliada de 800 para 2.000 chars
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _detect_doc_type(folder_name: str, filename: str, sample: str) -> DocType:
+    # FIX 6 — amostra ampliada de 800 → 2.000 chars para capturar preâmbulos longos
     base  = _FOLDER_DOCTYPE.get(folder_name, DocType.GENERICO)
-    # FIX #6: usa 2.000 chars para capturar documentos com preâmbulo longo
     probe = (filename + " " + sample[:2000]).lower()
     if _RE_CONVENIO.search(probe):
         return DocType.CONVENIO
@@ -309,94 +370,81 @@ def _detect_doc_type(folder_name: str, filename: str, sample: str) -> DocType:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FIX #9 — EXTRAÇÃO JSON VIA LLM com retry e backoff
-# FIX #2 — execução paralela via ThreadPoolExecutor
+# EXTRAÇÃO JSON VIA LLM
+# FIX 9 — @retry com backoff exponencial
 # ══════════════════════════════════════════════════════════════════════════════
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=1, max=15),
-    retry=retry_if_exception_type(Exception),
-    reraise=False,
-)
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=15))
 def _extract_json(content: str, doc_type: DocType) -> dict:
     from langchain_core.messages import HumanMessage, SystemMessage
     system  = _SYSTEM_PROMPTS.get(doc_type, _SYSTEM_PROMPTS[DocType.GENERICO])
     snippet = content[:3000]
-    resp = _llm().invoke([
-        SystemMessage(content=system),
-        HumanMessage(content=f"TRECHO DO DOCUMENTO:\n\n{snippet}"),
-    ])
-    raw   = resp.content.strip()
-    fence = _RE_JSON_FENCE.search(raw)
-    if fence:
-        raw = fence.group(1)
-    return json.loads(raw)
-
-
-def _extract_json_safe(content: str, doc_type: DocType) -> dict:
-    """Wrapper com captura de exceção para uso no executor paralelo."""
     try:
-        return _extract_json(content, doc_type)
+        resp = _llm().invoke([
+            SystemMessage(content=system),
+            HumanMessage(content=f"TRECHO DO DOCUMENTO:\n\n{snippet}"),
+        ])
+        raw   = resp.content.strip()
+        fence = _RE_JSON_FENCE.search(raw)
+        if fence:
+            raw = fence.group(1)
+        return json.loads(raw)
     except json.JSONDecodeError as e:
         return {"assunto": content[:80], "_parse_error": str(e)}
     except Exception as e:
         return {"assunto": content[:80], "_llm_error": str(e)}
 
 
+# FIX 2 — extração paralela com ThreadPoolExecutor
 def _extract_json_parallel(
     parents: list[dict],
     doc_type: DocType,
-    max_json: int = 200,
-    max_workers: int = 8,
+    max_json: int = MAX_JSON,
 ) -> list[dict]:
     """
-    FIX #2: extrai JSON dos parents em paralelo.
-    Parents além de max_json recebem {} (sem custo de LLM).
-    FIX #5: loga claramente quantos parents foram descartados.
+    Extrai JSON de até max_json parents em paralelo.
+    Workers configurável via settings.LLM_WORKERS (padrão 8).
+    Parents além do limite recebem {} e são logados explicitamente.
     """
-    total     = len(parents)
-    to_process = min(total, max_json)
-    skipped    = total - to_process
+    n_workers = getattr(settings, "LLM_WORKERS", 8)
+    n_process = min(len(parents), max_json)
+    n_skip    = len(parents) - n_process
 
-    if skipped > 0:
+    # FIX 5 — log claro do descarte
+    if n_skip > 0:
         logger.warning(
-            f"  ⚠ {skipped} parents acima do limite MAX_JSON={max_json} "
-            f"— serão indexados SEM extração JSON estruturado"
+            f"  ⚠ {n_skip} parents acima do limite MAX_JSON={max_json} "
+            f"— serão indexados SEM extração JSON estruturada"
         )
 
-    logger.info(f"  🤖 Extraindo JSON ({to_process} parents, {max_workers} workers)...")
+    results: list[dict] = [{}] * len(parents)
 
-    results: list[dict] = [{}] * total
-
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
         future_to_idx = {
-            ex.submit(_extract_json_safe, parents[i]["content"], doc_type): i
-            for i in range(to_process)
+            ex.submit(_extract_json, parents[i]["content"], doc_type): i
+            for i in range(n_process)
         }
-        completed = 0
+        done = 0
         for future in as_completed(future_to_idx):
             idx = future_to_idx[future]
-            results[idx] = future.result()
-            completed += 1
-            if completed % 25 == 0 or completed == to_process:
+            try:
+                results[idx] = future.result()
+            except Exception as e:
+                results[idx] = {"assunto": parents[idx]["content"][:80], "_llm_error": str(e)}
+            done += 1
+            if done % 25 == 0 or done == n_process:
                 ok = sum(
-                    1 for r in results[:completed]
+                    1 for r in results[:done]
                     if r and "_llm_error" not in r and "_parse_error" not in r
                 )
-                logger.debug(f"    {completed}/{to_process} | {ok} OK")
+                logger.debug(f"    LLM parallel: {done}/{n_process} | {ok} OK")
 
-    json_ok = sum(
-        1 for r in results[:to_process]
-        if r and "_llm_error" not in r and "_parse_error" not in r
-    )
-    logger.info(f"  ✓ JSON: {json_ok}/{to_process} sem erro (+ {skipped} sem extração)")
     return results
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # DETECÇÃO DE HTML DISFARÇADO DE PDF
-# FIX #4 — recodificação cp1252/latin-1 → UTF-8 explícita
+# FIX 4 — recodifica cp1252/cp1250/latin-1 → UTF-8 limpo
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _is_html(path: Path) -> bool:
@@ -410,15 +458,14 @@ def _is_html(path: Path) -> bool:
 
 def _ensure_correct_extension(path: Path) -> Path:
     """
-    FIX #4: renomeia .pdf para .html se o conteúdo for HTML,
-    recodificando explicitamente de cp1252/latin-1 para UTF-8.
-    O Planalto frequentemente serve HTML encodado em cp1252.
+    Renomeia .pdf para .html se o conteúdo for HTML (Planalto retorna HTML).
+    FIX 4: tenta decodificar em múltiplos encodings e reescreve em UTF-8 limpo.
     """
     if not _is_html(path):
         return path
 
     html_path = path.with_suffix(".html")
-    raw       = path.read_bytes()
+    raw = path.read_bytes()
 
     for enc in ("utf-8", "cp1252", "cp1250", "latin-1"):
         try:
@@ -429,9 +476,10 @@ def _ensure_correct_extension(path: Path) -> Path:
         except UnicodeDecodeError:
             continue
 
-    # Último recurso: copia sem recodificação
+    # Fallback: copia sem recodificar (melhor que falhar)
+    import shutil
     shutil.copy2(path, html_path)
-    logger.warning("  📄 HTML detectado (encoding desconhecido) — copiado sem recodificação")
+    logger.warning("  📄 HTML detectado — encoding desconhecido, cópia sem recodificação")
     return html_path
 
 
@@ -670,14 +718,22 @@ def _extract_ncms_from_table(table_md: str, source_meta: dict, parent_id: str) -
             beneficio_raw = m.group(0) if m else ""
 
         b_lower = beneficio_raw.lower()
-        if "isen" in b_lower:         beneficio = "isencao"
-        elif "redu" in b_lower:       beneficio = "reducao"
-        elif "difer" in b_lower:      beneficio = "diferimento"
-        elif "suspen" in b_lower:     beneficio = "suspensao"
-        elif "st" in b_lower or "substitui" in b_lower: beneficio = "st"
-        elif "crédito" in b_lower or "credito" in b_lower: beneficio = "credito_outorgado"
-        elif "não incide" in b_lower or "nao incide" in b_lower: beneficio = "nao_incidencia"
-        else: beneficio = beneficio_raw or "tributado"
+        if "isen" in b_lower:
+            beneficio = "isencao"
+        elif "redu" in b_lower:
+            beneficio = "reducao"
+        elif "difer" in b_lower:
+            beneficio = "diferimento"
+        elif "suspen" in b_lower:
+            beneficio = "suspensao"
+        elif "st" in b_lower or "substitui" in b_lower:
+            beneficio = "st"
+        elif "crédito" in b_lower or "credito" in b_lower:
+            beneficio = "credito_outorgado"
+        elif "não incide" in b_lower or "nao incide" in b_lower:
+            beneficio = "nao_incidencia"
+        else:
+            beneficio = beneficio_raw or "tributado"
 
         percentual = ""
         if col_indices["percentual"] >= 0 and col_indices["percentual"] < len(raw_cols):
@@ -763,12 +819,13 @@ def _extract_tables(docling_result: Any, source_meta: dict) -> tuple[list[dict],
 
 def _upsert_ncm_records(ncm_records: list[dict]) -> None:
     """
-    FIX #3: reutiliza cliente Supabase cacheado em vez de criar novo.
+    Salva registros NCM na tabela kb_ncm_fiscal com deduplicação.
+    FIX 3 — usa _supabase() cacheado (lru_cache) em vez de create_client()
     """
     if not ncm_records:
         return
     try:
-        sb = _supabase()  # FIX #3: era create_client(...) — agora usa cache
+        sb = _supabase()  # FIX 3
         for i in range(0, len(ncm_records), 100):
             sb.table("kb_ncm_fiscal").upsert(
                 ncm_records[i: i + 100],
@@ -816,20 +873,8 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _json_exists_in_drive(
-    svc: Any,
-    json_filename: str,
-    folder_id: str,
-) -> Optional[str]:
-    """
-    FIX #1: verifica se o .json já existe no Drive (não no Supabase).
-    Retorna o file_id do Drive se existir, None caso contrário.
-    """
-    from gdrive import _get_file_id_in_folder
-    return _get_file_id_in_folder(svc, json_filename, folder_id)
-
-
 def _embedding_already_exists(table: str, file_hash: str) -> bool:
+    """Verifica se os embeddings já foram gerados para este arquivo no Supabase."""
     resp = (
         _supabase().table(table)
         .select("id")
@@ -842,6 +887,22 @@ def _embedding_already_exists(table: str, file_hash: str) -> bool:
     return len(resp.data) > 0
 
 
+def _get_indexed_chunk_indices(table: str, file_hash: str) -> set[int]:
+    """
+    FIX 10 — retorna o conjunto de chunk_index de children que já possuem
+    embedding gravado no Supabase, para pular re-embedding incremental.
+    """
+    resp = (
+        _supabase().table(table)
+        .select("chunk_index")
+        .eq("file_hash", file_hash)
+        .eq("chunk_level", "child")
+        .not_.is_("embedding", "null")
+        .execute()
+    )
+    return {row["chunk_index"] for row in resp.data}
+
+
 def _upsert_batch(table: str, rows: list[dict]) -> None:
     for i in range(0, len(rows), 100):
         _supabase().table(table).upsert(
@@ -850,16 +911,8 @@ def _upsert_batch(table: str, rows: list[dict]) -> None:
         ).execute()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FIX #9 — EMBEDDINGS com retry e backoff
-# ══════════════════════════════════════════════════════════════════════════════
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=2, max=20),
-    retry=retry_if_exception_type(Exception),
-    reraise=True,
-)
+# FIX 9 — retry com backoff exponencial nos embeddings
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=20))
 def _embed_batch_with_retry(texts: list[str]) -> list[list[float]]:
     return _embeddings().embed_documents(texts)
 
@@ -881,21 +934,30 @@ def process_pdf(
     Fase 1: Converte PDF em chunks estruturados com JSON do LLM
     e salva o resultado como .json no Google Drive.
     NÃO gera embeddings nem grava no Supabase.
+
+    FIX 1 — verificação de existência no Drive (fonte da verdade):
+      1. Calcula hash SHA-256 do arquivo
+      2. Monta o nome esperado do JSON (<stem>.json)
+      3. Checa se já existe no Drive → pula Fase 1 se sim
+      Supabase resetado não dispara re-processamento LLM.
     """
     logger.info(f"▶ [FASE 1] {file_name}")
 
     from gdrive import _get_service, _get_or_create_folder, _upload_bytes_to_drive, _get_file_id_in_folder
 
-    # FIX #1 — verifica re-processamento no Drive (não no Supabase)
+    # FIX 1 — calcula hash e checa Drive ANTES de qualquer processamento pesado
+    file_hash     = _sha256(pdf_path)
     json_filename = file_name.rsplit(".", 1)[0] + ".json"
-    svc           = _get_service()
-    folder_id     = _get_or_create_folder(svc, folder_name, settings.GDRIVE_ROOT_FOLDER_ID)
 
-    existing_json_id = _json_exists_in_drive(svc, json_filename, folder_id)
+    svc       = _get_service()
+    folder_id = _get_or_create_folder(svc, folder_name, settings.GDRIVE_ROOT_FOLDER_ID)
+
+    existing_json_id = _get_file_id_in_folder(svc, json_filename, folder_id)
     if existing_json_id:
-        # Ainda computa o hash para retornar consistente, mas não re-processa
-        file_hash = _sha256(pdf_path)
-        logger.info(f"  ⏭ {json_filename} já existe no Drive — pulando Fase 1")
+        logger.info(
+            f"  ⏭ JSON já existe no Drive ({json_filename}) — pulando Fase 1\n"
+            f"    hash={file_hash[:12]}... | drive_id={existing_json_id}"
+        )
         return {
             "status":        "json_exists",
             "file":          file_name,
@@ -904,9 +966,7 @@ def process_pdf(
             "file_hash":     file_hash,
         }
 
-    file_hash = _sha256(pdf_path)
-
-    # ── Detecta HTML disfarçado de PDF (FIX #4 dentro de _ensure_correct_extension)
+    # ── Detecta HTML disfarçado de PDF ────────────────────────────────────────
     doc_path = _ensure_correct_extension(pdf_path)
 
     # ── Docling: documento → markdown estruturado ─────────────────────────────
@@ -916,7 +976,7 @@ def process_pdf(
     pages    = len(result.document.pages) if result.document.pages else 0
     logger.info(f"  Docling OK: {pages} páginas | {len(markdown):,} chars")
 
-    # ── Detecta tipo de documento (FIX #6: amostra 2.000 chars) ──────────────
+    # ── Detecta tipo de documento ─────────────────────────────────────────────
     doc_type = _detect_doc_type(folder_name, file_name, markdown)
     logger.info(f"  📄 Tipo: {doc_type.value}")
 
@@ -946,10 +1006,17 @@ def process_pdf(
 
     logger.info(f"  → {len(parents)} parents | {len(children)} children")
 
-    # ── FIX #2 + #5 + #9: extração JSON paralela com log de descarte ─────────
-    MAX_JSON    = 200
-    LLM_WORKERS = getattr(settings, "LLM_WORKERS", 8)
-    parent_jsons = _extract_json_parallel(parents, doc_type, MAX_JSON, LLM_WORKERS)
+    # ── Extração JSON via LLM (paralelo, max MAX_JSON) ────────────────────────
+    # FIX 2 — paralelo com ThreadPoolExecutor
+    # FIX 5 — descarte logado explicitamente dentro de _extract_json_parallel
+    logger.info(f"  🤖 Extraindo JSON ({min(len(parents), MAX_JSON)} parents, paralelo)...")
+    parent_jsons = _extract_json_parallel(parents, doc_type, max_json=MAX_JSON)
+
+    json_ok = sum(
+        1 for j in parent_jsons
+        if j and "_llm_error" not in j and "_parse_error" not in j
+    )
+    logger.info(f"  ✓ JSON: {json_ok}/{len(parents)} sem erro")
 
     # ── Monta payload JSON para salvar no Drive ───────────────────────────────
     chunks_payload = []
@@ -977,11 +1044,6 @@ def process_pdf(
             "children":    p_children,
         })
 
-    json_ok = sum(
-        1 for j in parent_jsons[:MAX_JSON]
-        if j and "_llm_error" not in j and "_parse_error" not in j
-    )
-
     json_payload = {
         "file_name":      file_name,
         "file_id":        file_id,
@@ -1000,7 +1062,7 @@ def process_pdf(
     # ── Salva .json no Google Drive ───────────────────────────────────────────
     json_bytes = json.dumps(json_payload, ensure_ascii=False, indent=2).encode("utf-8")
 
-    # Remove versão anterior se existir (por segurança, embora checamos acima)
+    # Remove versão anterior se existir (raro: corrida entre workers)
     old_id = _get_file_id_in_folder(svc, json_filename, folder_id)
     if old_id:
         try:
@@ -1030,8 +1092,7 @@ def process_pdf(
 
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 2 — index_from_json()
-# Lê .json do Drive → Embeddings incrementais → Upsert no Supabase
-# FIX #10 — embeddings gravados por lote, com retomada incremental
+# Lê .json do Drive → Embeddings → Upsert no Supabase
 # ══════════════════════════════════════════════════════════════════════════════
 
 def index_from_json(
@@ -1041,10 +1102,13 @@ def index_from_json(
 ) -> dict[str, Any]:
     """
     Fase 2: Lê o .json do Google Drive, gera embeddings nos children
-    e faz upsert incremental no Supabase.
+    e faz upsert no Supabase (tabela vetorizada do agente).
 
-    FIX #10: children já gravados com embedding são detectados e pulados,
-    permitindo retomada em caso de falha no meio do processo.
+    FIX 10 — embeddings incrementais:
+      - Consulta quais chunk_index já possuem embedding no Supabase
+      - Pula children já embedados (não re-processa)
+      - Persiste cada lote imediatamente após geração (não acumula em memória)
+      Resultado: documentos grandes são resilientes a falhas parciais.
     """
     logger.info(f"▶ [FASE 2] {json_filename} → {table_name}")
 
@@ -1066,12 +1130,20 @@ def index_from_json(
     file_name = payload["file_name"]
     doc_type  = payload.get("doc_type", "generico")
 
-    # ── Verifica se embeddings já existem (todos completos) ───────────────────
+    # ── Verifica embedding completo no Supabase (skip rápido) ────────────────
     if _embedding_already_exists(table_name, file_hash):
         logger.info(f"  ⏭ Embeddings já existem para {file_name}")
         return {"status": "already_indexed", "file": file_name}
 
-    chunks      = payload.get("chunks", [])
+    # FIX 10 — consulta chunk_index já embedados (retomada incremental)
+    already_indexed: set[int] = _get_indexed_chunk_indices(table_name, file_hash)
+    if already_indexed:
+        logger.info(
+            f"  ↩ Retomando indexação incremental: "
+            f"{len(already_indexed)} children já embedados — serão pulados"
+        )
+
+    chunks    = payload.get("chunks", [])
     source_meta = {
         "file_name":   file_name,
         "file_id":     payload.get("file_id", ""),
@@ -1086,8 +1158,7 @@ def index_from_json(
 
     # ── Reconstrói parents e children do JSON ────────────────────────────────
     parent_rows: list[dict] = []
-    child_rows:  list[dict] = []
-    all_child_texts: list[str] = []
+    child_rows_pending: list[dict] = []   # children que precisam de embedding
 
     for chunk in chunks:
         pjson = chunk.get("structured", {})
@@ -1126,82 +1197,76 @@ def index_from_json(
         })
 
         for child in chunk.get("children", []):
-            child_meta = {**enriched_meta,
-                          "chunk_index": child["chunk_index"],
-                          "chunk_level": "child",
-                          "parent_id":   child["parent_id"]}
-            child_rows.append({
+            child_idx = child["chunk_index"]
+
+            # FIX 10 — pula children já embedados
+            if child_idx in already_indexed:
+                continue
+
+            child_meta = {
+                **enriched_meta,
+                "chunk_index": child_idx,
+                "chunk_level": "child",
+                "parent_id":   child["parent_id"],
+            }
+            child_rows_pending.append({
                 "content":     child["content"],
                 "metadata":    child_meta,
                 "file_name":   file_name,
                 "file_hash":   file_hash,
                 "folder":      folder_name,
                 "agent":       folder_name,
-                "chunk_index": child["chunk_index"],
+                "chunk_index": child_idx,
                 "chunk_level": "child",
                 "parent_id":   child["parent_id"],
                 "h1":          chunk.get("h1", "")[:100],
                 "h2":          chunk.get("h2", ""),
                 "indexed_at":  source_meta["indexed_at"],
             })
-            all_child_texts.append(child["content"])
 
-    logger.info(f"  → {len(parent_rows)} parents | {len(child_rows)} children")
+    total_children = len(child_rows_pending) + len(already_indexed)
+    logger.info(
+        f"  → {len(parent_rows)} parents | "
+        f"{len(child_rows_pending)} children pendentes "
+        f"(+{len(already_indexed)} já indexados)"
+    )
 
-    # ── Upsert parents primeiro (sem embedding) ───────────────────────────────
+    # ── Upsert parents (sem embedding, idempotente) ───────────────────────────
     _upsert_batch(table_name, parent_rows)
     logger.debug(f"  ✓ {len(parent_rows)} parents gravados")
 
-    # ── FIX #10: embeddings incrementais por lote ────────────────────────────
-    # Detecta quais children já têm embedding para permitir retomada
-    existing_idx: set[int] = set()
-    try:
-        resp = (
-            _supabase().table(table_name)
-            .select("chunk_index")
-            .eq("file_hash", file_hash)
-            .eq("chunk_level", "child")
-            .not_.is_("embedding", "null")
-            .execute()
-        )
-        existing_idx = {r["chunk_index"] for r in resp.data}
-        if existing_idx:
-            logger.info(f"  ↩ Retomada: {len(existing_idx)} children já embedados — pulando")
-    except Exception as e:
-        logger.warning(f"  ⚠ Não foi possível verificar embeddings existentes: {e}")
+    # ── Gera embeddings incrementalmente e persiste por lote ─────────────────
+    # FIX 10 — persiste cada lote imediatamente; falha no meio = retomada limpa
+    # FIX 9  — _embed_batch_with_retry tem @retry com backoff
+    total_embedded = 0
+    for i in range(0, len(child_rows_pending), settings.BATCH_SIZE):
+        batch_rows  = child_rows_pending[i: i + settings.BATCH_SIZE]
+        batch_texts = [r["content"] for r in batch_rows]
 
-    pending_rows  = [r for r in child_rows  if r["chunk_index"] not in existing_idx]
-    pending_texts = [t for r, t in zip(child_rows, all_child_texts) if r["chunk_index"] not in existing_idx]
-
-    if not pending_rows:
-        logger.info("  ⏭ Todos os children já têm embedding")
-        return {"status": "already_indexed", "file": file_name}
-
-    logger.info(f"  🔢 Gerando {len(pending_texts)} embeddings (FIX #9: retry ativo)...")
-    embedded_count = 0
-
-    for i in range(0, len(pending_texts), settings.BATCH_SIZE):
-        batch_texts = pending_texts[i: i + settings.BATCH_SIZE]
-        batch_rows  = pending_rows[i: i + settings.BATCH_SIZE]
-
-        # FIX #9: retry com backoff em cada lote de embeddings
         vecs = _embed_batch_with_retry(batch_texts)
 
         for row, vec in zip(batch_rows, vecs):
             row["embedding"] = vec
 
-        # FIX #10: persiste o lote imediatamente (não acumula tudo em memória)
         _upsert_batch(table_name, batch_rows)
-        embedded_count += len(batch_rows)
-        logger.debug(f"    Embeddings: {embedded_count}/{len(pending_texts)} gravados")
+        total_embedded += len(batch_rows)
+        logger.debug(
+            f"  🔢 Embeddings: {total_embedded}/{len(child_rows_pending)} "
+            f"gravados em '{table_name}'"
+        )
 
-    logger.success(f"  ✅ {embedded_count} children gravados em '{table_name}'")
+    logger.success(
+        f"  ✅ Fase 2 concluída: {len(parent_rows)} parents | "
+        f"{total_embedded} children embedados | {len(already_indexed)} já existiam"
+    )
 
     return {
-        "status":   "indexed",
-        "file":     file_name,
-        "table":    table_name,
-        "parents":  len(parent_rows),
-        "children": embedded_count,
-        "pages":    payload.get("pages", 0),
+        "status":           "indexed",
+        "file":             file_name,
+        "table":            table_name,
+        "parents":          len(parent_rows),
+        "children_new":     total_embedded,
+        "children_skipped": len(already_indexed),
+        "children_total":   total_children,
+        "pages":            payload.get("pages", 0),
     }
