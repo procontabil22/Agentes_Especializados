@@ -249,31 +249,14 @@ def _embeddings():
 
 @lru_cache(maxsize=1)
 def _llm():
-    """LLM para extração de metadados JSON — temperatura 0."""
-    if settings.ANTHROPIC_API_KEY:
-        from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(
-            model="claude-haiku-4-5-20251001",
-            anthropic_api_key=settings.ANTHROPIC_API_KEY,
-            max_tokens=600,
-            temperature=0,
-        )
-    if settings.OPENAI_API_KEY:
-        from langchain_openai import ChatOpenAI
-        return ChatOpenAI(
-            model="gpt-4o-mini",
-            openai_api_key=settings.OPENAI_API_KEY,
-            max_tokens=600,
-            temperature=0,
-        )
-    if settings.GEMINI_API_KEY:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash",
-            google_api_key=settings.GEMINI_API_KEY,
-            max_output_tokens=600,
-        )
-    raise RuntimeError("Nenhuma chave de LLM configurada.")
+    """LLM para extração de metadados JSON — temperatura 0. Usa OpenAI exclusivamente."""
+    from langchain_openai import ChatOpenAI
+    return ChatOpenAI(
+        model="gpt-4o-mini",
+        openai_api_key=settings.OPENAI_API_KEY,
+        max_tokens=600,
+        temperature=0,
+    )
 
 
 def _convert_with_timeout(doc_path: Path, timeout_secs: int = 120):
@@ -335,8 +318,10 @@ def _extract_json(content: str, doc_type: DocType) -> dict:
             raw = fence.group(1)
         return json.loads(raw)
     except json.JSONDecodeError as e:
+        logger.warning(f"  ⚠ _extract_json parse error: {e} | raw[:200]={raw[:200]!r}")
         return {"assunto": content[:80], "_parse_error": str(e)}
     except Exception as e:
+        logger.warning(f"  ⚠ _extract_json llm error ({type(e).__name__}): {e}")
         return {"assunto": content[:80], "_llm_error": str(e)}
 
 
