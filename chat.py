@@ -64,17 +64,8 @@ def _embeddings():
 def _get_llm():
     """
     Seleciona o LLM disponível na seguinte ordem de prioridade:
-      1. Anthropic (Claude)  2. OpenAI (GPT)  3. Google Gemini
-      4. Grok (xAI)          5. DeepSeek
+      1. OpenAI (GPT)  2. Google Gemini  3. Grok (xAI)  4. DeepSeek
     """
-    if settings.ANTHROPIC_API_KEY:
-        from langchain_anthropic import ChatAnthropic
-        logger.info("LLM selecionado: Anthropic (Claude Haiku)")
-        return ChatAnthropic(
-            model="claude-haiku-4-5-20251001",
-            anthropic_api_key=settings.ANTHROPIC_API_KEY,
-            max_tokens=2048,
-        )
     if settings.OPENAI_API_KEY:
         from langchain_openai import ChatOpenAI
         logger.info("LLM selecionado: OpenAI (GPT-4o-mini)")
@@ -111,13 +102,12 @@ def _get_llm():
         )
     raise RuntimeError(
         "Nenhuma chave de API de LLM configurada. "
-        "Configure ao menos uma das variáveis: ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+        "Configure ao menos uma das variáveis: OPENAI_API_KEY, "
         "GEMINI_API_KEY, GROK_API_KEY ou DEEPSEEK_API_KEY."
     )
 
 
 def _get_llm_name() -> str:
-    if settings.ANTHROPIC_API_KEY: return "Anthropic (Claude Haiku)"
     if settings.OPENAI_API_KEY:    return "OpenAI (GPT-4o-mini)"
     if settings.GEMINI_API_KEY:    return "Google Gemini"
     if settings.GROK_API_KEY:      return "Grok (xAI)"

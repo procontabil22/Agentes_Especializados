@@ -15,8 +15,7 @@ class Settings(BaseSettings):
     EMBEDDING_DIMENSIONS: int = 1536
 
     # ── LLMs de chat (configure ao menos um) ─────────────────────────────────
-    # Ordem de prioridade: Anthropic → OpenAI → Gemini → Grok → DeepSeek
-    ANTHROPIC_API_KEY: Optional[str] = None   # Claude
+    # Ordem de prioridade: OpenAI → Gemini → Grok → DeepSeek
     GEMINI_API_KEY:    Optional[str] = None   # Google Gemini
     GROK_API_KEY:      Optional[str] = None   # xAI Grok
     DEEPSEEK_API_KEY:  Optional[str] = None   # DeepSeek
