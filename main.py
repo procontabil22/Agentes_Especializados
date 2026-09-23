@@ -16,12 +16,34 @@ from loguru import logger
 from pydantic import BaseModel
 
 from settings import settings  # ← flat import
+import progress_state  # ← flat import
 
 # ── Estado global ─────────────────────────────────────────────────────────────
 _index_status = {"last_run": None, "running": False, "last_report": None}
 _start_time = datetime.utcnow().isoformat()
 
 scheduler = AsyncIOScheduler()
+
+
+def _run_indexing_sync(folder: str | None):
+    """Roda o coroutine run_indexing() do zero, com seu PRÓPRIO event loop --
+    chamado via asyncio.to_thread (ver _run_indexing_job) pra rodar numa thread
+    separada da thread principal do servidor.
+
+    Por quê: run_indexing() (orchestrator.py) faz trabalho síncrono pesado
+    (Docling, chamadas de LLM, upload/download no Drive, geração de
+    embeddings) sem nunca liberar o event loop -- antes, `await
+    run_indexing(...)` direto na thread principal (via BackgroundTasks)
+    travava o processo inteiro (uvicorn roda com 1 worker só) enquanto uma
+    indexação estava em andamento: até o /health e o /index/status paravam
+    de responder (confirmado ao vivo, 2026-09-23 -- consulta a /index/status
+    deu timeout total enquanto uma indexação rodava). Rodando numa thread
+    separada, a thread principal fica livre pra atender /index/progress
+    (e qualquer outro endpoint) o tempo todo.
+    """
+    import asyncio as _asyncio
+    from orchestrator import run_indexing  # ← flat import
+    return _asyncio.run(run_indexing(folder_filter=folder))
 
 
 async def _run_indexing_job(folder: str | None = None):
@@ -31,11 +53,11 @@ async def _run_indexing_job(folder: str | None = None):
     _index_status["running"] = True
     _index_status["last_run"] = datetime.utcnow().isoformat()
     try:
-        from orchestrator import run_indexing  # ← flat import
-        report = await run_indexing(folder_filter=folder)
+        report = await asyncio.to_thread(_run_indexing_sync, folder)
         _index_status["last_report"] = report
     finally:
         _index_status["running"] = False
+        progress_state.finalizar()  # defensivo -- run_indexing() já chama, isso cobre erro nao tratado no meio
 
 
 @asynccontextmanager
@@ -167,6 +189,17 @@ async def trigger_index_folder(
 def index_status(x_api_key: Optional[str] = Header(None)):
     _check_auth(x_api_key)
     return _index_status
+
+
+@app.get("/index/progress")
+def index_progress(x_api_key: Optional[str] = Header(None)):
+    """Progresso em tempo real (etapa atual + arquivo atual) de uma indexação em
+    andamento, pra telas de acompanhamento (ex.: barra de progresso). Diferente
+    de /index/status, que só guarda o RELATÓRIO FINAL da última rodada
+    completa -- este endpoint reflete o estado atual, atualizado a cada etapa
+    (ver progress_state.py)."""
+    _check_auth(x_api_key)
+    return progress_state.get()
 
 
 @app.get("/crawler/sources")

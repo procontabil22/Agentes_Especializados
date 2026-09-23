@@ -99,6 +99,7 @@ from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from settings import settings
+import progress_state
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -970,6 +971,7 @@ def process_pdf(
     doc_path = _ensure_correct_extension(pdf_path)
 
     # ── Docling: documento → markdown estruturado ─────────────────────────────
+    progress_state.etapa("convertendo")
     logger.info("  🔍 Docling: convertendo documento...")
     result   = _converter().convert(str(doc_path))
     markdown = result.document.export_to_markdown()
@@ -1009,6 +1011,7 @@ def process_pdf(
     # ── Extração JSON via LLM (paralelo, max MAX_JSON) ────────────────────────
     # FIX 2 — paralelo com ThreadPoolExecutor
     # FIX 5 — descarte logado explicitamente dentro de _extract_json_parallel
+    progress_state.etapa("extraindo_json")
     logger.info(f"  🤖 Extraindo JSON ({min(len(parents), MAX_JSON)} parents, paralelo)...")
     parent_jsons = _extract_json_parallel(parents, doc_type, max_json=MAX_JSON)
 
@@ -1060,6 +1063,7 @@ def process_pdf(
     }
 
     # ── Salva .json no Google Drive ───────────────────────────────────────────
+    progress_state.etapa("salvando_json")
     json_bytes = json.dumps(json_payload, ensure_ascii=False, indent=2).encode("utf-8")
 
     # Remove versão anterior se existir (raro: corrida entre workers)
@@ -1232,6 +1236,7 @@ def index_from_json(
     )
 
     # ── Upsert parents (sem embedding, idempotente) ───────────────────────────
+    progress_state.etapa("gerando_embeddings")
     _upsert_batch(table_name, parent_rows)
     logger.debug(f"  ✓ {len(parent_rows)} parents gravados")
 

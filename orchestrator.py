@@ -27,6 +27,7 @@ from gdrive import _get_service, _get_or_create_folder, list_files_in_folder, do
 from pipeline import process_pdf, index_from_json   # ← flat import
 from settings import settings           # ← flat import
 from downloader import download_public_sources  # ← flat import
+import progress_state  # ← flat import
 
 
 # ── Tipos de arquivo suportados ───────────────────────────────────────────────
@@ -64,6 +65,7 @@ async def run_indexing(folder_filter: Optional[str] = None) -> dict:
     logger.info(f"▶ Iniciando indexação — {started_at}")
     if folder_filter:
         logger.info(f"  Filtro de pasta: '{folder_filter}'")
+    progress_state.iniciar(folder_filter)
 
     folder_table_map = settings.get_folder_table_map()
     if not folder_table_map:
@@ -149,17 +151,20 @@ async def run_indexing(folder_filter: Optional[str] = None) -> dict:
         processable = [f for f in files if _is_processable(f)]
         logger.info(f"  {len(processable)} arquivo(s) para processar de {len(files)} total")
         report["totals"]["total_files"] += len(processable)
+        progress_state.pasta(folder_name, len(processable))
 
         # ── Processa cada arquivo ─────────────────────────────────────────────
         with tempfile.TemporaryDirectory(prefix="fintax_") as tmp_dir:
-            for file in processable:
+            for indice_arquivo, file in enumerate(processable, start=1):
                 file_id   = file["id"]
                 file_name = file["name"]
                 modified  = file.get("modifiedTime", "")
 
                 logger.info(f"  ↓ {file_name}")
+                progress_state.proximo_arquivo(file_name, indice_arquivo)
 
                 # 1. Download do Drive
+                progress_state.etapa("baixando")
                 try:
                     pdf_bytes = download_file_bytes(svc, file_id)
                 except Exception as e:
@@ -233,6 +238,7 @@ async def run_indexing(folder_filter: Optional[str] = None) -> dict:
         f"{t['error']} erros | "
         f"total {t['total_files']} arquivos"
     )
+    progress_state.finalizar()
     return report
 
 
