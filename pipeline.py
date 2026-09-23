@@ -623,12 +623,32 @@ _RE_NCM = re.compile(
     r"|\b(\d{4})\s*[.\-]?\s*(\d{2})\b"
     r"|\b(\d{4})\b"
 )
-_RE_NCM_BENEFICIO = re.compile(
-    r"(isen[çc][aã]o|redu[çc][aã]o|diferimento|suspens[aã]o|"
-    r"substitui[çc][aã]o\s+tribut[aá]ria|ST|cr[eé]dito\s+outorgado|"
-    r"imunidade|n[aã]o\s+incid[eê]ncia)",
-    re.IGNORECASE
+# Benefício fiscal de ICMS. ICMS-ST (substituição tributária) NÃO é benefício -- é regime de
+# recolhimento --, por isso não é classificado aqui. A ordem é a prioridade quando o texto
+# cita mais de um; "\b" evita casar dentro de outra palavra (antes "ST" casava em
+# "restaurante"/"estabelecimento" e virava benefício ST).
+_BENEFICIOS_ORDEM = [
+    ("isencao",           re.compile(r"\bisen[çc][aã]o|\bisent[oa]s?\b", re.IGNORECASE)),
+    ("diferimento",       re.compile(r"\bdiferiment|\bdiferid", re.IGNORECASE)),
+    ("reducao",           re.compile(r"\bredu[çc][aã]o|\breduzid", re.IGNORECASE)),
+    ("suspensao",         re.compile(r"\bsuspens[aã]o", re.IGNORECASE)),
+    ("credito_outorgado", re.compile(r"\bcr[eé]dito\s+outorgado", re.IGNORECASE)),
+    ("nao_incidencia",    re.compile(r"\bn[aã]o\s+incid[eê]ncia|\bimunidade", re.IGNORECASE)),
+]
+# Sem coluna de NCM identificada, só aceita 6+ dígitos (posição de 4 dígitos solta pegava ano/artigo).
+_RE_NCM_FORTE = re.compile(
+    r"\b(\d{4})\s*[.\-]?\s*(\d{2})\s*[.\-]?\s*(\d{2})\s*[.\-]?\s*(\d{2})\b"
+    r"|\b(\d{4})\s*[.\-]?\s*(\d{2})\s*[.\-]?\s*(\d{2})\b"
 )
+
+
+def _classificar_beneficio(texto: str) -> str:
+    for nome, rx in _BENEFICIOS_ORDEM:
+        if rx.search(texto or ""):
+            return nome
+    return ""
+
+
 _RE_PERCENTUAL = re.compile(
     r"(\d+(?:[.,]\d+)?)\s*%|MVA\s+(\d+(?:[.,]\d+)?)\s*%|"
     r"redu[çc][aã]o\s+de\s+(\d+(?:[.,]\d+)?)\s*%",
@@ -691,7 +711,7 @@ def _extract_ncms_from_table(table_md: str, source_meta: dict, parent_id: str) -
             ncm_raw = raw_cols[col_indices["ncm"]]
         else:
             for col in raw_cols:
-                m = _RE_NCM.search(col)
+                m = _RE_NCM_FORTE.search(col)
                 if m:
                     ncm_raw = m.group(0)
                     break
@@ -711,30 +731,10 @@ def _extract_ncms_from_table(table_md: str, source_meta: dict, parent_id: str) -
         if col_indices["descricao"] >= 0 and col_indices["descricao"] < len(raw_cols):
             descricao = raw_cols[col_indices["descricao"]]
 
-        beneficio_raw = ""
         if col_indices["beneficio"] >= 0 and col_indices["beneficio"] < len(raw_cols):
-            beneficio_raw = raw_cols[col_indices["beneficio"]]
+            beneficio = _classificar_beneficio(raw_cols[col_indices["beneficio"]]) or "tributado"
         else:
-            m = _RE_NCM_BENEFICIO.search(full_line)
-            beneficio_raw = m.group(0) if m else ""
-
-        b_lower = beneficio_raw.lower()
-        if "isen" in b_lower:
-            beneficio = "isencao"
-        elif "redu" in b_lower:
-            beneficio = "reducao"
-        elif "difer" in b_lower:
-            beneficio = "diferimento"
-        elif "suspen" in b_lower:
-            beneficio = "suspensao"
-        elif "st" in b_lower or "substitui" in b_lower:
-            beneficio = "st"
-        elif "crédito" in b_lower or "credito" in b_lower:
-            beneficio = "credito_outorgado"
-        elif "não incide" in b_lower or "nao incide" in b_lower:
-            beneficio = "nao_incidencia"
-        else:
-            beneficio = beneficio_raw or "tributado"
+            beneficio = _classificar_beneficio(full_line) or "tributado"
 
         percentual = ""
         if col_indices["percentual"] >= 0 and col_indices["percentual"] < len(raw_cols):
@@ -818,7 +818,7 @@ def _extract_tables(docling_result: Any, source_meta: dict) -> tuple[list[dict],
     return table_chunks, ncm_records
 
 
-def _upsert_ncm_records(ncm_records: list[dict]) -> None:
+def _upsert_ncm_records(ncm_records: list[dict], file_hash: str = "") -> None:
     """
     Salva registros NCM na tabela kb_ncm_fiscal com deduplicação.
     FIX 3 — usa _supabase() cacheado (lru_cache) em vez de create_client()
@@ -827,6 +827,9 @@ def _upsert_ncm_records(ncm_records: list[dict]) -> None:
         return
     try:
         sb = _supabase()  # FIX 3
+        if file_hash:
+            # Substituição limpa por arquivo: reextrair não deixa pra trás linhas de uma extração antiga.
+            sb.table("kb_ncm_fiscal").delete().eq("file_hash", file_hash).execute()
         for i in range(0, len(ncm_records), 100):
             sb.table("kb_ncm_fiscal").upsert(
                 ncm_records[i: i + 100],
@@ -923,6 +926,38 @@ def _embed_batch_with_retry(texts: list[str]) -> list[list[float]]:
 # PDF → Docling → Chunks → LLM JSON → Salva .json no Drive
 # ══════════════════════════════════════════════════════════════════════════════
 
+def reextract_ncm_de_pdf(
+    pdf_path: Path,
+    file_name: str,
+    file_id: str,
+    folder_name: str,
+    modified_at: str = "",
+) -> dict[str, Any]:
+    """
+    Refaz SÓ a extração de NCMs/benefícios (kb_ncm_fiscal) de um PDF já indexado: Docling + tabelas.
+    Não chama LLM, não mexe no JSON do Drive nem nos embeddings. Usado depois de corrigir as regras
+    de extração (process_pdf pula a Fase 1 quando o JSON já existe, então NCMs antigos nunca seriam
+    reprocessados).
+    """
+    logger.info(f"▶ [REEXTRAIR NCM] {file_name}")
+    file_hash = _sha256(pdf_path)
+    doc_path = _ensure_correct_extension(pdf_path)
+    progress_state.etapa("convertendo")
+    result = _converter().convert(str(doc_path))
+    markdown = result.document.export_to_markdown()
+    doc_type = _detect_doc_type(folder_name, file_name, markdown)
+    source_meta = {
+        "file_name": file_name, "file_id": file_id, "file_hash": file_hash, "folder_name": folder_name,
+        "modified_at": modified_at, "indexed_at": datetime.utcnow().isoformat(),
+        "agent": folder_name, "doc_type": doc_type.value,
+    }
+    progress_state.etapa("extraindo_json")
+    _, ncm_records = _extract_tables(result, source_meta)
+    progress_state.etapa("gerando_embeddings")
+    _upsert_ncm_records(ncm_records, file_hash)
+    return {"status": "ncm_reextracted", "file": file_name, "ncm_records": len(ncm_records), "file_hash": file_hash}
+
+
 def process_pdf(
     pdf_path: Path,
     file_name: str,
@@ -1004,7 +1039,7 @@ def process_pdf(
         logger.info(f"  📊 {len(table_chunks)} tabela(s) | {len(ncm_records)} NCM(s) extraídos")
 
     if ncm_records:
-        _upsert_ncm_records(ncm_records)
+        _upsert_ncm_records(ncm_records, file_hash)
 
     logger.info(f"  → {len(parents)} parents | {len(children)} children")
 

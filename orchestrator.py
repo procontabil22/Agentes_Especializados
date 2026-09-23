@@ -24,7 +24,7 @@ from typing import Optional
 from loguru import logger
 
 from gdrive import _get_service, _get_or_create_folder, list_files_in_folder, download_file_bytes  # ← flat import
-from pipeline import process_pdf, index_from_json   # ← flat import
+from pipeline import process_pdf, index_from_json, reextract_ncm_de_pdf   # ← flat import
 from settings import settings           # ← flat import
 from downloader import download_public_sources  # ← flat import
 import progress_state  # ← flat import
@@ -48,7 +48,8 @@ def _is_processable(file: dict) -> bool:
 
 # ── Ponto de entrada principal ────────────────────────────────────────────────
 
-async def run_indexing(folder_filter: Optional[str] = None) -> dict:
+async def run_indexing(folder_filter: Optional[str] = None, reextract_ncm: bool = False,
+                       file_contains: Optional[str] = None) -> dict:
     """
     Percorre as pastas do Google Drive, baixa os PDFs e os indexa no Supabase
     via pipeline.process_pdf().
@@ -56,6 +57,8 @@ async def run_indexing(folder_filter: Optional[str] = None) -> dict:
     Args:
         folder_filter: se informado, processa apenas a pasta com esse nome
                        (ex: "fiscal", "contabil"). None = todas as pastas.
+        reextract_ncm: refaz só a extração de NCMs/benefícios (kb_ncm_fiscal) dos PDFs, sem LLM/JSON/embeddings.
+        file_contains: se informado, só arquivos cujo nome contém esse texto (sem diferenciar maiúsculas).
 
     Returns:
         Relatório com contadores e detalhes por arquivo.
@@ -149,6 +152,8 @@ async def run_indexing(folder_filter: Optional[str] = None) -> dict:
             continue
 
         processable = [f for f in files if _is_processable(f)]
+        if file_contains:
+            processable = [f for f in processable if file_contains.lower() in f.get("name", "").lower()]
         logger.info(f"  {len(processable)} arquivo(s) para processar de {len(files)} total")
         report["totals"]["total_files"] += len(processable)
         progress_state.pasta(folder_name, len(processable))
@@ -179,6 +184,22 @@ async def run_indexing(folder_filter: Optional[str] = None) -> dict:
                 # 2. Salva temporariamente em disco para o Docling
                 tmp_path = Path(tmp_dir) / file_name
                 tmp_path.write_bytes(pdf_bytes)
+
+                if reextract_ncm:
+                    try:
+                        result = reextract_ncm_de_pdf(
+                            pdf_path=tmp_path, file_name=file_name, file_id=file_id,
+                            folder_name=folder_name, modified_at=modified,
+                        )
+                        folder_report["processed"] += 1
+                        report["totals"]["processed"] += 1
+                    except Exception as e:
+                        logger.error(f"    ✗ Reextração de NCM falhou para '{file_name}': {e}")
+                        result = {"status": "error", "file": file_name, "error": str(e)}
+                        folder_report["error"] += 1
+                        report["totals"]["error"] += 1
+                    folder_report["files"].append(result)
+                    continue
 
                 # 3. FASE 1: PDF → Docling → JSON estruturado → Drive
                 try:

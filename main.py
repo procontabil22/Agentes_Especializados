@@ -25,7 +25,7 @@ _start_time = datetime.utcnow().isoformat()
 scheduler = AsyncIOScheduler()
 
 
-def _run_indexing_sync(folder: str | None):
+def _run_indexing_sync(folder: str | None, reextract_ncm: bool = False, file_contains: str | None = None):
     """Roda o coroutine run_indexing() do zero, com seu PRÓPRIO event loop --
     chamado via asyncio.to_thread (ver _run_indexing_job) pra rodar numa thread
     separada da thread principal do servidor.
@@ -43,17 +43,17 @@ def _run_indexing_sync(folder: str | None):
     """
     import asyncio as _asyncio
     from orchestrator import run_indexing  # ← flat import
-    return _asyncio.run(run_indexing(folder_filter=folder))
+    return _asyncio.run(run_indexing(folder_filter=folder, reextract_ncm=reextract_ncm, file_contains=file_contains))
 
 
-async def _run_indexing_job(folder: str | None = None):
+async def _run_indexing_job(folder: str | None = None, reextract_ncm: bool = False, file_contains: str | None = None):
     if _index_status["running"]:
         logger.warning("Indexação já em andamento")
         return
     _index_status["running"] = True
     _index_status["last_run"] = datetime.utcnow().isoformat()
     try:
-        report = await asyncio.to_thread(_run_indexing_sync, folder)
+        report = await asyncio.to_thread(_run_indexing_sync, folder, reextract_ncm, file_contains)
         _index_status["last_report"] = report
     finally:
         _index_status["running"] = False
@@ -113,6 +113,9 @@ class ChatRequest(BaseModel):
 class IndexRequest(BaseModel):
     folder: Optional[str] = None
     download_sources: bool = True
+    # Refaz só NCMs/benefícios (kb_ncm_fiscal) dos PDFs já indexados -- sem LLM, JSON ou embeddings.
+    reextract_ncm: bool = False
+    file_contains: Optional[str] = None
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -169,7 +172,7 @@ async def trigger_index(
     _check_auth(x_api_key)
     if _index_status["running"]:
         raise HTTPException(409, "Indexação já em andamento")
-    background_tasks.add_task(_run_indexing_job, body.folder)
+    background_tasks.add_task(_run_indexing_job, body.folder, body.reextract_ncm, body.file_contains)
     return {"status": "started", "folder": body.folder or "todas",
             "message": "Indexação iniciada em background. Consulte /index/status."}
 
