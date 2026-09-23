@@ -675,6 +675,7 @@ def _extract_ncms_from_table(table_md: str, source_meta: dict, parent_id: str) -
 
     col_indices = {"ncm": -1, "descricao": -1, "beneficio": -1,
                    "percentual": -1, "condicao": -1, "dispositivo": -1}
+    pct_eh_aliquota = False  # a coluna de percentual é "Alíquota" (e não MVA/redução)
 
     for line in lines:
         if "|" not in line:
@@ -693,6 +694,7 @@ def _extract_ncms_from_table(table_md: str, source_meta: dict, parent_id: str) -
                     col_indices["beneficio"] = i
                 elif any(k in col for k in ["%", "alíquota", "aliquota", "percentual", "mva"]):
                     col_indices["percentual"] = i
+                    pct_eh_aliquota = ("alíquota" in col or "aliquota" in col) and "mva" not in col
                 elif any(k in col for k in ["condição", "condicao", "requisito"]):
                     col_indices["condicao"] = i
                 elif any(k in col for k in ["dispositiv", "base legal", "fundamento", "art"]):
@@ -742,6 +744,11 @@ def _extract_ncms_from_table(table_md: str, source_meta: dict, parent_id: str) -
         else:
             m = _RE_PERCENTUAL.search(full_line)
             percentual = m.group(0) if m else ""
+
+        # Linha de tabela de ALÍQUOTA (coluna "Alíquota" com um percentual) sem benefício reconhecido: registra como
+        # 'aliquota' para o TaxMind usar a alíquota do NCM na venda em vez da alíquota geral.
+        if beneficio == "tributado" and pct_eh_aliquota and re.search(r"\d", percentual or ""):
+            beneficio = "aliquota"
 
         condicao = ""
         if col_indices["condicao"] >= 0 and col_indices["condicao"] < len(raw_cols):
