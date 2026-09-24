@@ -677,6 +677,10 @@ def _extract_ncms_from_table(table_md: str, source_meta: dict, parent_id: str) -
     col_indices = {"ncm": -1, "descricao": -1, "beneficio": -1,
                    "percentual": -1, "condicao": -1, "dispositivo": -1}
     pct_eh_aliquota = False  # a coluna de percentual é "Alíquota" (e não MVA/redução)
+    # Nos anexos do RICMS o benefício é o título do anexo (ex.: "Anexo 1.2 - Isenção por tempo determinado"), não uma
+    # coluna da linha: o nome do arquivo vira o padrão quando a linha não diz nada.
+    _nome_arq = source_meta.get("file_name", "") or ""
+    beneficio_arquivo = _classificar_beneficio(_nome_arq) if re.match(r"\s*anexo", _nome_arq, re.IGNORECASE) else ""
 
     for line in lines:
         if "|" not in line:
@@ -735,9 +739,9 @@ def _extract_ncms_from_table(table_md: str, source_meta: dict, parent_id: str) -
             descricao = raw_cols[col_indices["descricao"]]
 
         if col_indices["beneficio"] >= 0 and col_indices["beneficio"] < len(raw_cols):
-            beneficio = _classificar_beneficio(raw_cols[col_indices["beneficio"]]) or "tributado"
+            beneficio = _classificar_beneficio(raw_cols[col_indices["beneficio"]]) or beneficio_arquivo or "tributado"
         else:
-            beneficio = _classificar_beneficio(full_line) or "tributado"
+            beneficio = _classificar_beneficio(full_line) or beneficio_arquivo or "tributado"
 
         percentual = ""
         if col_indices["percentual"] >= 0 and col_indices["percentual"] < len(raw_cols):
