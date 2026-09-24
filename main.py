@@ -163,6 +163,37 @@ async def chat(
     return await ask_agent(agent_id, body.question, body.history)
 
 
+@app.get("/document-text")
+def document_text(
+    folder: str,
+    file_contains: str,
+    max_chars: int = 20000,
+    offset: int = 0,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Somente leitura: devolve o texto (chunks) do .json que a Fase 1 gravou no Drive para o PDF cujo nome contém file_contains."""
+    _check_auth(x_api_key)
+    import json as _json
+    from gdrive import _get_service, _get_or_create_folder, download_file_bytes, list_files_in_folder
+    from settings import settings as _settings
+    svc = _get_service()
+    folder_id = _get_or_create_folder(svc, folder, _settings.GDRIVE_ROOT_FOLDER_ID)
+    alvos = [f for f in list_files_in_folder(svc, folder_id, 1000)
+             if f.get("name", "").lower().endswith(".json") and file_contains.lower() in f.get("name", "").lower()]
+    if not alvos:
+        raise HTTPException(404, "Nenhum .json encontrado com esse nome")
+    saida = []
+    for f in alvos:
+        payload = _json.loads(download_file_bytes(svc, f["id"]).decode("utf-8"))
+        partes = []
+        for ch in payload.get("chunks", []):
+            titulo = " > ".join(x for x in [ch.get("h1", ""), ch.get("h2", ""), ch.get("unit_title", "")] if x)
+            partes.append(f"[chunk {ch.get('chunk_index')}] {titulo}\n{ch.get('content', '')}")
+        texto = "\n\n".join(partes)
+        saida.append({"arquivo": f.get("name"), "total_chars": len(texto), "offset": offset, "texto": texto[offset: offset + max_chars]})
+    return {"arquivos": saida}
+
+
 @app.post("/index")
 async def trigger_index(
     body: IndexRequest,
