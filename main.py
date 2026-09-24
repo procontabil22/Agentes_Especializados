@@ -194,6 +194,40 @@ def document_text(
     return {"arquivos": saida}
 
 
+@app.get("/pdf-text")
+def pdf_text(
+    folder: str,
+    file_contains: str,
+    max_chars: int = 20000,
+    offset: int = 0,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Somente leitura: texto direto do PDF (sem OCR/Docling) do Drive cujo nome contém file_contains, por página."""
+    _check_auth(x_api_key)
+    from gdrive import _get_service, _get_or_create_folder, download_file_bytes, list_files_in_folder
+    from settings import settings as _settings
+    try:
+        import pypdfium2 as pdfium
+    except Exception as e:
+        raise HTTPException(500, f"pypdfium2 indisponível: {e}")
+    svc = _get_service()
+    folder_id = _get_or_create_folder(svc, folder, _settings.GDRIVE_ROOT_FOLDER_ID)
+    alvos = [f for f in list_files_in_folder(svc, folder_id, 1000)
+             if f.get("name", "").lower().endswith(".pdf") and file_contains.lower() in f.get("name", "").lower()]
+    if not alvos:
+        raise HTTPException(404, "Nenhum PDF encontrado com esse nome")
+    saida = []
+    for f in alvos:
+        doc = pdfium.PdfDocument(download_file_bytes(svc, f["id"]))
+        paginas = []
+        for i in range(len(doc)):
+            texto = doc[i].get_textpage().get_text_range()
+            paginas.append(f"[pagina {i + 1}]\n{texto}")
+        texto = "\n\n".join(paginas)
+        saida.append({"arquivo": f.get("name"), "paginas": len(doc), "total_chars": len(texto), "offset": offset, "texto": texto[offset: offset + max_chars]})
+    return {"arquivos": saida}
+
+
 @app.post("/index")
 async def trigger_index(
     body: IndexRequest,
