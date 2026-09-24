@@ -867,6 +867,58 @@ def _upsert_ncm_records(ncm_records: list[dict], file_hash: str = "") -> None:
         logger.info(f"  ✅ {len(lote_final)} NCMs gravados em kb_ncm_fiscal ({len(ncm_records) - len(lote_final)} duplicados descartados)")
     except Exception as e:
         logger.error(f"  ✗ Erro ao gravar NCMs: {e}")
+        return
+    _upsert_beneficios_vetor(ncm_records, file_hash)
+
+
+def _chunk_beneficio_ncm(r: dict) -> dict:
+    """
+    Chunk estruturado de um NCM de anexo: texto pronto para busca semântica. O benefício (isenção, diferimento,
+    redução, alíquota) NÃO é classificado aqui -- vai no título do anexo, e o TaxMind interpreta ao consultar.
+    """
+    anexo = (r.get("file_name") or "").rsplit(".", 1)[0]
+    partes = [f"Anexo do RICMS: {anexo}", f"NCM {r.get('ncm') or r.get('ncm_norm')}"]
+    if r.get("descricao"):
+        partes.append(f"Mercadoria: {r['descricao']}")
+    if r.get("percentual"):
+        partes.append(f"Percentual/alíquota: {r['percentual']}")
+    if r.get("condicao"):
+        partes.append(f"Condição: {r['condicao']}")
+    if r.get("dispositivo"):
+        partes.append(f"Dispositivo legal: {r['dispositivo']}")
+    partes.append(f"UF: {r.get('uf') or 'MA'}")
+    content = ". ".join(partes)
+    chave = hashlib.md5(f"{r.get('percentual') or ''}|{r.get('condicao') or ''}|{r.get('descricao') or ''}".encode("utf-8")).hexdigest()[:16]
+    return {
+        "ncm_norm": r.get("ncm_norm"), "ncm": r.get("ncm"), "anexo": anexo,
+        "descricao": r.get("descricao"), "percentual": r.get("percentual"), "condicao": r.get("condicao"),
+        "dispositivo": r.get("dispositivo"), "uf": r.get("uf") or "MA", "file_name": r.get("file_name"),
+        "file_hash": r.get("file_hash"), "chunk_key": chave, "content": content,
+    }
+
+
+def _upsert_beneficios_vetor(ncm_records: list[dict], file_hash: str) -> None:
+    """Gera os chunks estruturados por NCM, embeda e grava em kb_beneficios_ncm (substitui o que havia do arquivo)."""
+    if not ncm_records or not file_hash:
+        return
+    try:
+        unicos: dict = {}
+        for r in ncm_records:
+            c = _chunk_beneficio_ncm(r)
+            unicos[(c["ncm_norm"], c["chunk_key"])] = c
+        chunks = list(unicos.values())
+        sb = _supabase()
+        sb.table("kb_beneficios_ncm").delete().eq("file_hash", file_hash).execute()
+        for i in range(0, len(chunks), settings.BATCH_SIZE):
+            lote = chunks[i: i + settings.BATCH_SIZE]
+            vecs = _embed_batch_with_retry([c["content"] for c in lote])
+            for c, v in zip(lote, vecs):
+                c["embedding"] = v
+            for j in range(0, len(lote), 100):
+                sb.table("kb_beneficios_ncm").upsert(lote[j: j + 100], on_conflict="file_hash,ncm_norm,chunk_key").execute()
+        logger.info(f"  ✅ {len(chunks)} chunks de benefício por NCM embedados em kb_beneficios_ncm")
+    except Exception as e:
+        logger.error(f"  ✗ Erro ao gravar chunks de benefício em kb_beneficios_ncm: {str(e)[:300]}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
