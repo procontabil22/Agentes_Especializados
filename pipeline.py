@@ -86,6 +86,7 @@ FIXES v2:
 import hashlib
 import json
 import re
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -837,12 +838,29 @@ def _upsert_ncm_records(ncm_records: list[dict], file_hash: str = "") -> None:
         if file_hash:
             # Substituição limpa por arquivo: reextrair não deixa pra trás linhas de uma extração antiga.
             sb.table("kb_ncm_fiscal").delete().eq("file_hash", file_hash).execute()
-        for i in range(0, len(ncm_records), 100):
-            sb.table("kb_ncm_fiscal").upsert(
-                ncm_records[i: i + 100],
-                on_conflict="ncm_norm,file_hash,beneficio",
-            ).execute()
-        logger.info(f"  ✅ {len(ncm_records)} NCMs gravados em kb_ncm_fiscal")
+        # Um mesmo NCM pode repetir (mesmo benefício) no arquivo; o Postgres recusa duplicata no mesmo comando.
+        # Mantém a linha com mais informação (percentual/condição preenchidos).
+        unicos: dict = {}
+        for r in ncm_records:
+            k = (r.get("ncm_norm"), r.get("file_hash"), r.get("beneficio"))
+            ant = unicos.get(k)
+            if ant is None or len(str(r.get("percentual") or "") + str(r.get("condicao") or "")) > len(str(ant.get("percentual") or "") + str(ant.get("condicao") or "")):
+                unicos[k] = r
+        lote_final = list(unicos.values())
+        for i in range(0, len(lote_final), 100):
+            for tentativa in range(4):
+                try:
+                    sb.table("kb_ncm_fiscal").upsert(
+                        lote_final[i: i + 100],
+                        on_conflict="ncm_norm,file_hash,beneficio",
+                    ).execute()
+                    break
+                except Exception as e_lote:
+                    if tentativa == 3:
+                        raise
+                    logger.warning(f"  ⚠ Falha transitória ao gravar NCMs (tentativa {tentativa + 1}/4): {str(e_lote)[:120]}")
+                    time.sleep(3 * (tentativa + 1))
+        logger.info(f"  ✅ {len(lote_final)} NCMs gravados em kb_ncm_fiscal ({len(ncm_records) - len(lote_final)} duplicados descartados)")
     except Exception as e:
         logger.error(f"  ✗ Erro ao gravar NCMs: {e}")
 
