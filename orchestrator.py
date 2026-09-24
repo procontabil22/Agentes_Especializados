@@ -48,6 +48,32 @@ def _is_processable(file: dict) -> bool:
 
 # ── Ponto de entrada principal ────────────────────────────────────────────────
 
+def _chave_duplicata(f: dict) -> str:
+    """Cópias do mesmo arquivo: mesmo conteúdo (md5 do Drive) ou, sem md5, mesmo nome normalizado e mesmo tamanho."""
+    import re as _re
+    import unicodedata as _ud
+    md5 = f.get("md5Checksum")
+    if md5:
+        return f"md5:{md5}"
+    nome = _ud.normalize("NFKD", f.get("name", "")).encode("ascii", "ignore").decode("ascii").lower()
+    nome = _re.sub(r"\.[a-z0-9]+$", "", nome)
+    nome = _re.sub(r"[^a-z0-9]+", " ", nome).strip()
+    return f"nome:{nome}|{f.get('size', '')}"
+
+
+def _sem_duplicatas(arquivos: list[dict]) -> list[dict]:
+    vistos: dict[str, str] = {}
+    unicos: list[dict] = []
+    for f in arquivos:
+        k = _chave_duplicata(f)
+        if k in vistos:
+            logger.info(f"  ⏭ Cópia repetida ignorada: {f.get('name')} (igual a {vistos[k]})")
+            continue
+        vistos[k] = f.get("name", "")
+        unicos.append(f)
+    return unicos
+
+
 async def run_indexing(folder_filter: Optional[str] = None, reextract_ncm: bool = False,
                        file_contains: Optional[str] = None) -> dict:
     """
@@ -154,6 +180,10 @@ async def run_indexing(folder_filter: Optional[str] = None, reextract_ncm: bool 
         processable = [f for f in files if _is_processable(f)]
         if file_contains:
             processable = [f for f in processable if file_contains.lower() in f.get("name", "").lower()]
+        antes = len(processable)
+        processable = _sem_duplicatas(processable)
+        if antes != len(processable):
+            logger.info(f"  {antes - len(processable)} cópia(s) repetida(s) ignorada(s)")
         logger.info(f"  {len(processable)} arquivo(s) para processar de {len(files)} total")
         report["totals"]["total_files"] += len(processable)
         progress_state.pasta(folder_name, len(processable))

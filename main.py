@@ -228,6 +228,54 @@ def pdf_text(
     return {"arquivos": saida}
 
 
+@app.get("/pdf-links")
+def pdf_links(
+    folder: str,
+    file_contains: str,
+    x_api_key: Optional[str] = Header(None),
+):
+    """Somente leitura: hiperlinks (URI) embutidos no PDF do Drive, com a página e o texto ancorado."""
+    _check_auth(x_api_key)
+    import ctypes
+    from gdrive import _get_service, _get_or_create_folder, download_file_bytes, list_files_in_folder
+    from settings import settings as _settings
+    try:
+        import pypdfium2 as pdfium
+        import pypdfium2.raw as raw
+    except Exception as e:
+        raise HTTPException(500, f"pypdfium2 indisponível: {e}")
+    svc = _get_service()
+    folder_id = _get_or_create_folder(svc, folder, _settings.GDRIVE_ROOT_FOLDER_ID)
+    alvos = [f for f in list_files_in_folder(svc, folder_id, 1000)
+             if f.get("name", "").lower().endswith(".pdf") and file_contains.lower() in f.get("name", "").lower()]
+    if not alvos:
+        raise HTTPException(404, "Nenhum PDF encontrado com esse nome")
+    alvo0 = alvos[0]
+    pdf = pdfium.PdfDocument(download_file_bytes(svc, alvo0["id"]))
+    links = []
+    for i in range(len(pdf)):
+        page = pdf[i]
+        textpage = page.get_textpage()
+        pos = ctypes.c_int(0)
+        link = raw.FPDF_LINK()
+        while raw.FPDFLink_Enumerate(page.raw, ctypes.byref(pos), ctypes.byref(link)):
+            action = raw.FPDFLink_GetAction(link)
+            if not action or raw.FPDFAction_GetType(action) != raw.PDFACTION_URI:
+                continue
+            n = raw.FPDFAction_GetURIPath(pdf.raw, action, None, 0)
+            buf = ctypes.create_string_buffer(n)
+            raw.FPDFAction_GetURIPath(pdf.raw, action, buf, n)
+            rect = raw.FS_RECTF()
+            texto = ""
+            if raw.FPDFLink_GetAnnotRect(link, rect):
+                try:
+                    texto = textpage.get_text_bounded(left=rect.left, bottom=rect.bottom, right=rect.right, top=rect.top)
+                except Exception:
+                    texto = ""
+            links.append({"pagina": i + 1, "uri": buf.value.decode("utf-8", "ignore"), "texto": (texto or "").strip()})
+    return {"arquivo": alvo0.get("name"), "paginas": len(pdf), "total_links": len(links), "links": links}
+
+
 @app.post("/index")
 async def trigger_index(
     body: IndexRequest,
