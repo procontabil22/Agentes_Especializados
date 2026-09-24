@@ -3,6 +3,11 @@ main.py — FastAPI FinTax Agents
 O /health responde imediatamente sem depender de nenhum serviço externo.
 Todos os clientes externos são inicializados lazy, apenas quando usados.
 """
+import sys as _sys
+# Python 3.11 candidato a versão (Ubuntu jammy) não traz estas funções (3.11.0rc2+): bibliotecas do Docling as chamam.
+if not hasattr(_sys, "get_int_max_str_digits"):
+    _sys.get_int_max_str_digits = lambda: 4300
+    _sys.set_int_max_str_digits = lambda maxdigits: None
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime

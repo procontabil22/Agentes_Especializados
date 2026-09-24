@@ -246,14 +246,18 @@ async def run_indexing(folder_filter: Optional[str] = None, reextract_ncm: bool 
                     result_f1 = {"status": "error", "file": file_name, "error": str(e)}
 
                 # 4. FASE 2: JSON do Drive → Embeddings → Supabase
-                if result_f1.get("status") in ("json_saved", "json_exists"):
+                if result_f1.get("status") in ("json_saved", "json_exists", "json_local"):
                     json_filename = result_f1.get("json_file") or file_name.rsplit(".", 1)[0] + ".json"
                     try:
                         result = index_from_json(
                             json_filename = json_filename,
                             folder_name   = folder_name,
                             table_name    = table_name,
+                            payload       = result_f1.get("payload"),
                         )
+                        if result_f1.get("status") == "json_local":
+                            result["json_drive"] = "nao_gravado"
+                            result["upload_error"] = result_f1.get("upload_error")
                     except Exception as e:
                         logger.error(f"    ✗ Fase 2 falhou para '{json_filename}': {e}")
                         result = {"status": "error", "file": file_name, "error": str(e)}

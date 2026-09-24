@@ -83,6 +83,11 @@ FIXES v2:
            chunk_index já embedados no Supabase são pulados
 """
 
+import sys as _sys
+# Python 3.11 candidato a versão (Ubuntu jammy) não traz estas funções (3.11.0rc2+): bibliotecas do Docling as chamam.
+if not hasattr(_sys, "get_int_max_str_digits"):
+    _sys.get_int_max_str_digits = lambda: 4300
+    _sys.set_int_max_str_digits = lambda maxdigits: None
 import hashlib
 import json
 import re
@@ -1190,10 +1195,28 @@ def process_pdf(
         except Exception:
             pass
 
-    drive_json_id = _upload_bytes_to_drive(
-        svc, json_bytes, json_filename, folder_id,
-        mime_type="application/json"
-    )
+    try:
+        drive_json_id = _upload_bytes_to_drive(
+            svc, json_bytes, json_filename, folder_id,
+            mime_type="application/json"
+        )
+    except Exception as e_up:
+        # Conta de serviço sem cota de armazenamento (pasta fora de Drive compartilhado): o JSON não vai para o Drive, mas a
+        # Fase 2 segue com o conteúdo em memória, para não perder chunks e embeddings.
+        logger.warning(f"  ⚠ JSON não gravado no Drive ({str(e_up)[:160]}); seguindo com o conteúdo em memória")
+        return {
+            "status":        "json_local",
+            "file":          file_name,
+            "json_file":     json_filename,
+            "file_hash":     file_hash,
+            "doc_type":      doc_type.value,
+            "parents":       len(parents),
+            "children":      len(children),
+            "json_ok":       json_ok,
+            "pages":         pages,
+            "upload_error":  str(e_up)[:300],
+            "payload":       json_payload,
+        }
     logger.success(f"  ✅ JSON salvo no Drive: {json_filename} → {drive_json_id}")
 
     return {
@@ -1219,6 +1242,7 @@ def index_from_json(
     json_filename: str,
     folder_name: str,
     table_name: str,
+    payload: Optional[dict] = None,
 ) -> dict[str, Any]:
     """
     Fase 2: Lê o .json do Google Drive, gera embeddings nos children
@@ -1232,19 +1256,20 @@ def index_from_json(
     """
     logger.info(f"▶ [FASE 2] {json_filename} → {table_name}")
 
-    from gdrive import _get_service, _get_or_create_folder, download_file_bytes, _get_file_id_in_folder
+    if payload is None:
+        from gdrive import _get_service, _get_or_create_folder, download_file_bytes, _get_file_id_in_folder
 
-    svc       = _get_service()
-    folder_id = _get_or_create_folder(svc, folder_name, settings.GDRIVE_ROOT_FOLDER_ID)
+        svc       = _get_service()
+        folder_id = _get_or_create_folder(svc, folder_name, settings.GDRIVE_ROOT_FOLDER_ID)
 
-    # ── Baixa o JSON do Drive ─────────────────────────────────────────────────
-    json_file_id = _get_file_id_in_folder(svc, json_filename, folder_id)
-    if not json_file_id:
-        logger.error(f"  ✗ {json_filename} não encontrado no Drive")
-        return {"status": "error", "file": json_filename, "error": "JSON não encontrado no Drive"}
+        # ── Baixa o JSON do Drive ─────────────────────────────────────────────────
+        json_file_id = _get_file_id_in_folder(svc, json_filename, folder_id)
+        if not json_file_id:
+            logger.error(f"  ✗ {json_filename} não encontrado no Drive")
+            return {"status": "error", "file": json_filename, "error": "JSON não encontrado no Drive"}
 
-    raw_bytes = download_file_bytes(svc, json_file_id)
-    payload   = json.loads(raw_bytes.decode("utf-8"))
+        raw_bytes = download_file_bytes(svc, json_file_id)
+        payload   = json.loads(raw_bytes.decode("utf-8"))
 
     file_hash = payload["file_hash"]
     file_name = payload["file_name"]
