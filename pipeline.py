@@ -923,7 +923,7 @@ def _upsert_ncm_records(ncm_records: list[dict], file_hash: str = "") -> None:
         sb = _supabase()  # FIX 3
         if file_hash:
             # Substituição limpa por arquivo: reextrair não deixa pra trás linhas de uma extração antiga.
-            sb.table("kb_ncm_fiscal").delete().eq("file_hash", file_hash).execute()
+            sb.table("kb_ncm_fiscal_ma").delete().eq("file_hash", file_hash).execute()
         # Um mesmo NCM pode repetir (mesmo benefício) no arquivo; o Postgres recusa duplicata no mesmo comando.
         # Mantém a linha com mais informação (percentual/condição preenchidos).
         unicos: dict = {}
@@ -936,7 +936,7 @@ def _upsert_ncm_records(ncm_records: list[dict], file_hash: str = "") -> None:
         for i in range(0, len(lote_final), 100):
             for tentativa in range(4):
                 try:
-                    sb.table("kb_ncm_fiscal").upsert(
+                    sb.table("kb_ncm_fiscal_ma").upsert(
                         lote_final[i: i + 100],
                         on_conflict="ncm_norm,file_hash,beneficio",
                     ).execute()
@@ -990,14 +990,14 @@ def _upsert_beneficios_vetor(ncm_records: list[dict], file_hash: str) -> None:
             unicos[(c["ncm_norm"], c["chunk_key"])] = c
         chunks = list(unicos.values())
         sb = _supabase()
-        sb.table("kb_beneficios_ncm").delete().eq("file_hash", file_hash).execute()
+        sb.table("kb_beneficios_ncm_ma").delete().eq("file_hash", file_hash).execute()
         for i in range(0, len(chunks), settings.BATCH_SIZE):
             lote = chunks[i: i + settings.BATCH_SIZE]
             vecs = _embed_batch_with_retry([c["content"] for c in lote])
             for c, v in zip(lote, vecs):
                 c["embedding"] = v
             for j in range(0, len(lote), 100):
-                sb.table("kb_beneficios_ncm").upsert(lote[j: j + 100], on_conflict="file_hash,ncm_norm,chunk_key").execute()
+                sb.table("kb_beneficios_ncm_ma").upsert(lote[j: j + 100], on_conflict="file_hash,ncm_norm,chunk_key").execute()
         logger.info(f"  ✅ {len(chunks)} chunks de benefício por NCM embedados em kb_beneficios_ncm")
     except Exception as e:
         logger.error(f"  ✗ Erro ao gravar chunks de benefício em kb_beneficios_ncm: {str(e)[:300]}")
