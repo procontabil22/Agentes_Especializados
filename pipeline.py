@@ -667,12 +667,78 @@ def _normalize_ncm(ncm_raw: str) -> str:
 
 
 def _format_ncm(ncm_norm: str) -> str:
-    n = ncm_norm.zfill(8)
+    # NBM antigo de 10 dígitos ("9018.11.0000") exibe só os 8 primeiros. Posição (4) e subposição (6) NÃO são completadas
+    # com zeros à esquerda: o zfill antigo transformava "3306.20" em "0033.06.20" (NCM que nunca casa com nota).
+    n = ncm_norm[:8]
     if len(n) == 8:
         return f"{n[:4]}.{n[4:6]}.{n[6:8]}"
     if len(n) == 7:
         return f"{n[:4]}.{n[4:6]}.{n[6:]}"
-    return ncm_norm
+    if len(n) == 6:
+        return f"{n[:4]}.{n[4:6]}"
+    return n
+
+
+# NCMs dentro de uma célula ou de um parágrafo: 8 dígitos pontuados (9018.11.00), NBM de 10 dígitos com espaço
+# ("9018.11 0000"), 8 dígitos corridos. Mais estrito que _RE_NCM_FORTE de propósito: aquele aceita espaço entre os grupos
+# e juntaria dois NCMs vizinhos ("8506.50.10 8506.50.90") em um só.
+_RE_NCM_LISTA = re.compile(
+    r"(?<![\d.])\d{4}\.\d{2}\.\d{2}(?:\.?\d{2})?(?![\d])"
+    r"|(?<![\d.])\d{4}\.\d{2}\s\d{4}(?![\d])"
+    r"|(?<![\d.])\d{8}(?![\d])"
+)
+_RE_ANEXO_BENEFICIO = re.compile(r"\s*anexo\s*1\.\d", re.IGNORECASE)
+_RE_INCISO = re.compile(r"^\s*(?:[-*]\s*)?((?:[IVXLC]+|\d+(?:\.\d+)*|[a-z])\s*[-–).])\s")
+
+
+def _ncms_da_celula(texto: str) -> list[str]:
+    """Todos os NCMs de 8+ dígitos de um trecho, sem repetir e na ordem em que aparecem."""
+    vistos: list[str] = []
+    for m in _RE_NCM_LISTA.finditer(texto or ""):
+        bruto = m.group(0)
+        if bruto not in vistos:
+            vistos.append(bruto)
+    return vistos
+
+
+def _extract_ncms_from_prosa(markdown: str, source_meta: dict, parent_id: str) -> list[dict]:
+    """
+    NCMs citados em TEXTO CORRIDO dos anexos de benefício (Anexo 1.x do RICMS/MA), fora de tabela. Os incisos do art. 1º
+    citam a mercadoria e o NCM no parágrafo ("XXIX - ... classificado na NCM/SH sob n° 2711.11.00"); a extração só de
+    tabelas os perdia. Só vale para arquivos "Anexo 1.x": em outros PDFs (leis, relatórios) um NCM no texto não é benefício.
+    """
+    nome = source_meta.get("file_name", "") or ""
+    if not _RE_ANEXO_BENEFICIO.match(nome):
+        return []
+    beneficio_arquivo = _classificar_beneficio(nome)
+    registros: list[dict] = []
+    for linha in (markdown or "").split("\n"):
+        if "|" in linha:
+            continue  # linhas de tabela já passaram por _extract_ncms_from_table
+        ncms = _ncms_da_celula(linha)
+        if not ncms:
+            continue
+        inciso = _RE_INCISO.match(linha)
+        m_pct = _RE_PERCENTUAL.search(linha)
+        for bruto in ncms:
+            norm = _normalize_ncm(bruto)[:8]
+            registros.append({
+                "ncm":         _format_ncm(norm),
+                "ncm_norm":    norm,
+                "descricao":   re.sub(r"\s+", " ", linha).strip()[:500],
+                "beneficio":   _classificar_beneficio(linha) or beneficio_arquivo or "tributado",
+                "percentual":  (m_pct.group(0) if m_pct else "")[:50],
+                "base_calculo": "",
+                "condicao":    "",
+                "dispositivo": (inciso.group(1).strip() if inciso else "")[:200],
+                "tipo_norma":  source_meta.get("doc_type", ""),
+                "uf":          source_meta.get("uf_aplicacao", "MA"),
+                "file_name":   nome,
+                "file_hash":   source_meta.get("file_hash", ""),
+                "parent_id":   parent_id,
+                "folder_name": source_meta.get("folder_name", ""),
+            })
+    return registros
 
 
 def _extract_ncms_from_table(table_md: str, source_meta: dict, parent_id: str) -> list[dict]:
@@ -685,7 +751,7 @@ def _extract_ncms_from_table(table_md: str, source_meta: dict, parent_id: str) -
     # Nos anexos do RICMS o benefício é o título do anexo (ex.: "Anexo 1.2 - Isenção por tempo determinado"), não uma
     # coluna da linha: o nome do arquivo vira o padrão quando a linha não diz nada.
     _nome_arq = source_meta.get("file_name", "") or ""
-    beneficio_arquivo = _classificar_beneficio(_nome_arq) if re.match(r"\s*anexo", _nome_arq, re.IGNORECASE) else ""
+    beneficio_arquivo = _classificar_beneficio(_nome_arq) if re.match(r"\s*anexo", _nome_arq, re.IGNORECASE) else ""
 
     for line in lines:
         if "|" not in line:
@@ -731,12 +797,9 @@ def _extract_ncms_from_table(table_md: str, source_meta: dict, parent_id: str) -
         if not ncm_raw:
             continue
 
-        ncm_digits = re.sub(r"[^\d]", "", ncm_raw)
-        if len(ncm_digits) < 4:
-            continue
-
-        ncm_norm = _normalize_ncm(ncm_raw)
-        ncm_fmt  = _format_ncm(ncm_norm)
+        # Uma célula pode listar vários NCMs ("8506.50.10 / 8506.50.90"): um registro por NCM (antes só o primeiro era gravado).
+        ncms_celula = _ncms_da_celula(ncm_raw)
+        lista_ncm = ncms_celula if len(ncms_celula) > 1 else [ncm_raw]
         full_line = " ".join(raw_cols)
 
         descricao = ""
@@ -768,22 +831,26 @@ def _extract_ncms_from_table(table_md: str, source_meta: dict, parent_id: str) -
         if col_indices["dispositivo"] >= 0 and col_indices["dispositivo"] < len(raw_cols):
             dispositivo = raw_cols[col_indices["dispositivo"]]
 
-        ncm_records.append({
-            "ncm":         ncm_fmt,
-            "ncm_norm":    ncm_norm[:8],
-            "descricao":   descricao[:500] if descricao else "",
-            "beneficio":   beneficio,
-            "percentual":  percentual[:50] if percentual else "",
-            "base_calculo": "",
-            "condicao":    condicao[:500] if condicao else "",
-            "dispositivo": dispositivo[:200] if dispositivo else "",
-            "tipo_norma":  source_meta.get("doc_type", ""),
-            "uf":          source_meta.get("uf_aplicacao", "MA"),
-            "file_name":   source_meta.get("file_name", ""),
-            "file_hash":   source_meta.get("file_hash", ""),
-            "parent_id":   parent_id,
-            "folder_name": source_meta.get("folder_name", ""),
-        })
+        for ncm_item in lista_ncm:
+            if len(re.sub(r"[^\d]", "", ncm_item)) < 4:
+                continue
+            ncm_norm = _normalize_ncm(ncm_item)
+            ncm_records.append({
+                "ncm":         _format_ncm(ncm_norm),
+                "ncm_norm":    ncm_norm[:8],
+                "descricao":   descricao[:500] if descricao else "",
+                "beneficio":   beneficio,
+                "percentual":  percentual[:50] if percentual else "",
+                "base_calculo": "",
+                "condicao":    condicao[:500] if condicao else "",
+                "dispositivo": dispositivo[:200] if dispositivo else "",
+                "tipo_norma":  source_meta.get("doc_type", ""),
+                "uf":          source_meta.get("uf_aplicacao", "MA"),
+                "file_name":   source_meta.get("file_name", ""),
+                "file_hash":   source_meta.get("file_hash", ""),
+                "parent_id":   parent_id,
+                "folder_name": source_meta.get("folder_name", ""),
+            })
 
     return ncm_records
 
@@ -828,6 +895,16 @@ def _extract_tables(docling_result: Any, source_meta: dict) -> tuple[list[dict],
 
     except Exception as e:
         logger.debug(f"  ⚠ Extração tabelas: {e}")
+
+    # Anexos 1.x (benefícios do RICMS/MA): também os NCMs citados em texto corrido, fora das tabelas.
+    try:
+        if _RE_ANEXO_BENEFICIO.match(source_meta.get("file_name", "") or ""):
+            prosa = _extract_ncms_from_prosa(docling_result.document.export_to_markdown(), source_meta, str(uuid.uuid4()))
+            if prosa:
+                logger.info(f"  📝 {len(prosa)} NCMs extraídos do texto corrido do anexo")
+                ncm_records.extend(prosa)
+    except Exception as e:
+        logger.debug(f"  ⚠ Extração de NCMs do texto corrido: {e}")
 
     if ncm_records:
         logger.info(f"  📦 Total NCMs extraídos das tabelas: {len(ncm_records)}")
